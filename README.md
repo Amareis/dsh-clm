@@ -77,8 +77,10 @@ The session contract mirrors `lib/types/session.d.ts`:
 ```bash
 npm install        # dev-only deps: typescript, vitest, @deepseek-ai type packages
 npm run build      # tsc → dist/ (NodeNext, strict, declarations + sourcemaps)
-npm test           # vitest: 48 tests incl. a FakeSession with exact
-                   # replacementRange semantics and end-to-end flow tests
+npm test           # vitest: 54 tests — FakeSession with exact replacementRange
+                   # semantics, end-to-end flow tests, and real-session
+                   # integration tests driving a detached dsh-session Session
+npm run check      # typechecks src/ AND test/
 ```
 
 `dist/` is gitignored — run `npm run build` after cloning before installing

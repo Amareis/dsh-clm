@@ -15,8 +15,11 @@ counter.
   registration, prompt section, runtime-context, debug surface dumps.
 - `index.js` — thin ESM entry re-exporting from `dist/`; the harness loads
   this file.
-- `test/` — vitest suite with `FakeSession` (`test/helpers.ts`) implementing
-  the real session's `replacementRange` semantics.
+- `test/` — vitest suite. `test/helpers.ts` has `FakeSession` implementing
+  the real session's `replacementRange` semantics; `test/real-session.test.ts`
+  runs the same flows against a REAL detached `Session`
+  (`@deepseek-ai/dsh-session`, devDependency — `Session.create()` + `append`,
+  no harness) to catch semantic drift between the fake and the runtime.
 - `docs/` — research background, engineering log (why the code is the way it
   is), and the compaction-engine spec (next milestone).
 

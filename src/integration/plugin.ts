@@ -26,9 +26,9 @@ import { parseArgs } from "../core/args.js";
 import { renderBudget } from "../core/budget.js";
 import { PLUGIN_NAME, TOOL_NAME } from "../core/constants.js";
 import { applyEdits } from "../core/edits.js";
-import { formatTokens } from "../core/format.js";
+import { renderSurfaceDump } from "../core/dump.js";
 import { renderMap } from "../core/map.js";
-import { buildNodes, countEdits } from "../core/nodes.js";
+import { countEdits } from "../core/nodes.js";
 import type { MeterLike, SessionLike } from "../core/types.js";
 
 const name = PLUGIN_NAME;
@@ -82,24 +82,8 @@ function dumpSurface(session: SessionLike, meter: MeterLike | undefined, tag: st
     const dir = env !== undefined && env !== ""
       ? env
       : path.join(os.homedir(), ".dsh", "clm-dumps", String(session.id ?? "session"));
-    const nodes = buildNodes(session, meter);
-    const total = nodes.reduce((sum, node) => sum + node.tokens, 0);
-    const parts = [
-      `# dsh-clm surface dump — ${tag} — ${new Date().toISOString()}`,
-      `# nodes: ${nodes.length}, ~${formatTokens(total)} tokens`,
-      ""
-    ];
-    for (const node of nodes) {
-      const role = node.message?.role ?? node.event?.type ?? "?";
-      parts.push(`\n## #${node.index} [${role}] ~${formatTokens(node.tokens)}t (seq ${node.seq})`);
-      for (const block of node.message?.content ?? []) {
-        // Indent body so markdown headers inside content don't collide with node headers.
-        if (block.type === "text") parts.push(`  ${(block.text ?? "").replace(/\n/g, "\n  ")}`);
-        else parts.push(`  [${block.type}] ${JSON.stringify(block)}`);
-      }
-    }
+    const body = renderSurfaceDump(session, meter, tag);
     fs.mkdirSync(dir, { recursive: true });
-    const body = parts.join("\n");
     fs.writeFileSync(path.join(dir, "surface-latest.md"), body);
     if (tag !== "map") fs.writeFileSync(path.join(dir, `surface-${tag}.md`), body);
   } catch {

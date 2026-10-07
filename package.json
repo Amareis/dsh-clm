@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dsh": {
     "bundle": {

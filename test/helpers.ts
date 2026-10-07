@@ -7,7 +7,7 @@
  */
 import type { ContentBlock, EventShape, MessageShape, SessionLike, SurfaceRef } from "../src/core/types.js";
 
-const SURFACE_TYPES = new Set(["user/message", "assistant/message", "developer/message", "tool/result"]);
+const SURFACE_TYPES = new Set(["system/message", "user/message", "assistant/message", "developer/message", "tool/result"]);
 
 export interface RecordedAppend {
   type: string;
@@ -87,7 +87,11 @@ export class FakeSession implements SessionLike {
   // ---- builders -----------------------------------------------------------
 
   addSystem(text: string): this {
-    this.append("developer/message", { message: { role: "developer", content: [{ type: "text", text }] } });
+    this.append("system/message", {
+      turn: 0,
+      step: 0,
+      message: { role: "system", content: [{ type: "text", text }], source: { kind: "system-prompt" } }
+    });
     return this;
   }
 

@@ -58,7 +58,7 @@ describe("renderMap", () => {
     const session = editableSurface();
     session.addSnapshot(); // second snapshot → the first becomes superseded
     const map = renderMap(session, undefined);
-    expect(map).toContain("#0 developer");
+    expect(map).toContain("#0 system");
     expect(map).toContain("🔒");
     expect(map).toContain("hidden from map: 1 superseded runtime-context snapshots");
     expect(map).toMatch(/surface: \d+ units \(\d+ nodes\), ~\S+ \/ 100\.0K tokens/);
