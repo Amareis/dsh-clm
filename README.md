@@ -106,6 +106,28 @@ composition.
 - Adjacent spans merge into a single replacement node; the merged marker takes
   the first span's content — put the combined summary in the first span.
 
+## Documentation
+
+- [docs/research-background.md](docs/research-background.md) — the CLM paper
+  in brief + the DSH internals this plugin builds on.
+- [docs/engineering-log.md](docs/engineering-log.md) — dogfooding history:
+  what broke, what we learned, why the invariants exist.
+- [docs/compaction-engine.md](docs/compaction-engine.md) — **next step**: spec
+  for `dsh-clm-compaction` (approach C), a native CLM condensation engine
+  implementing DSH's `dsh-compaction` contract with a pressure-trigger
+  protocol and fallback to the basic summarizer.
+
+## Roadmap
+
+1. **`dsh-clm-compaction` engine** (approach C) — see
+   [docs/compaction-engine.md](docs/compaction-engine.md).
+2. Host-side pre-step hook: fold a completed `context_edit` pair on the next
+   host step instead of waiting for the model's next edit.
+3. GUI: filter dropped (empty) nodes from the session trajectory view.
+4. Reconcile the receipt's surface math with the host budget counter (the
+   counter includes system prompt + tool definitions; the receipt doesn't).
+5. Approach B: mirror-file CLM (full paper fidelity) on top of the plugin API.
+
 ## Quick check
 
 ```
