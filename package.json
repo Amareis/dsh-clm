@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CLM-style context self-editing: context_edit tool, edit-policy prompt section, live budget counter (approach A from the context-management README)",
+  "description": "CLM-style context self-editing: context_edit tool, edit-policy prompt section, live budget counter",
   "exports": {
     ".": "./index.js"
   },
