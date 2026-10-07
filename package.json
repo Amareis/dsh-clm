@@ -1,0 +1,27 @@
+{
+  "name": "@local/dsh-clm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CLM-style context self-editing: context_edit tool, edit-policy prompt section, live budget counter (approach A from the context-management README)",
+  "exports": {
+    ".": "./index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-session": "^0.2.0-rc.2",
+    "@types/node": "^26.6.4",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.3"
+  }
+}

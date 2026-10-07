@@ -1,0 +1,5 @@
+# dsh-clm is self-contained: it registers into the profile's existing composition.
+- insert:
+  - id: dsh-clm
+    name: '@local/dsh-clm'
+    config: {}
