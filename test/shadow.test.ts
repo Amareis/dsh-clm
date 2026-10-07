@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { shadowedSeqsInRange } from "../src/core/shadow.js";
-import { FakeSession } from "./helpers.js";
+import { newTestSession } from "./helpers.js";
 
 describe("shadowedSeqsInRange", () => {
   it("returns the positional slice when seq values are NOT sorted (fresh seq spliced between older ones)", () => {
     // Build surface [0, 6, 9, 8]: seq 9 was spliced between 6 and 8 by an
     // earlier replace. A seq-VALUE filter in [6..8] would return {6, 8} and
     // miss 9 — the production "sourceEventSeqs missing 928" failure class.
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys"); // 0
     session.addUser("a"); // 1
     session.addUser("b"); // 2
@@ -31,13 +31,13 @@ describe("shadowedSeqsInRange", () => {
   });
 
   it("throws a precise error when a bound is not on the surface", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys").addUser("a");
     expect(() => shadowedSeqsInRange(session, 0, 99)).toThrow(/not on the surface/);
   });
 
   it("throws when bounds are positionally inverted", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys").addUser("a").addUser("b");
     expect(() => shadowedSeqsInRange(session, 2, 1)).toThrow(/inverted/);
   });

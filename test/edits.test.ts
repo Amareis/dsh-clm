@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { applyEdits } from "../src/core/edits.js";
 import { buildNodes, buildUnits } from "../src/core/nodes.js";
-import { editableSurface, FakeSession } from "./helpers.js";
+import { editableSurface, newTestSession, type TestSession } from "./helpers.js";
 
 /** Unit indices of the units whose members cover the given surface seqs. */
-function unitRangeCovering(session: FakeSession, seqs: number[]): { from: number; to: number } {
+function unitRangeCovering(session: TestSession, seqs: number[]): { from: number; to: number } {
   const nodes = buildNodes(session, undefined);
   const units = buildUnits(nodes);
   const bySeq = new Set(seqs);
@@ -80,7 +80,7 @@ describe("applyEdits", () => {
   it("covers shadowed seqs whose VALUES lie outside [start..end] (missing-928 regression)", () => {
     // Surface [0, 9, 8, …]: a span over positions 1..2 shadows seqs 9 and 8;
     // a value filter in [9..8] would find nothing / miss nodes.
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys"); // 0
     session.addUser("a").addUser("b").addUser("c").addUser("d"); // 1..4
     session.append("developer/message", { message: { role: "developer", content: [{ type: "text", text: "m1" }] } },
@@ -100,7 +100,7 @@ describe("applyEdits", () => {
     const range = unitRangeCovering(session, [9, 8]);
     const receipt = applyEdits(session, undefined, [{ from: range.from, to: range.to, content: "[compressed]" }]);
     expect(receipt).toContain("applied 1 edit:");
-    const replacement = session.appends.find((a) => a.ref !== undefined && a.ref.sourceEventSeqs.includes(9));
+    const replacement = session.appends.find((a) => a.ref !== undefined && a.ref.sourceEventSeqs?.includes(9));
     expect(replacement!.ref!.sourceEventSeqs).toEqual([9, 8]);
   });
 
@@ -108,7 +108,7 @@ describe("applyEdits", () => {
     // Surface [0, 4, 3, …] where seq 4 is a fresh marker positionally BEFORE
     // the older seq 3. The old value filter returned [] here —
     // "sourceEventSeqs must not be empty" aborted the whole transaction.
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys"); // 0
     session.addUser("a").addUser("b").addUser("c"); // 1,2,3
     session.append("developer/message", { message: { role: "developer", content: [{ type: "text", text: "m1" }] } },
@@ -126,7 +126,7 @@ describe("applyEdits", () => {
   });
 
   it("summarizes span roles as counts, with snapshots separated from users", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys"); // unit 0 (locked)
     session.addUser("q"); // unit 1
     session.addAssistantCalls([{ id: "c1", name: "bash" }]); // unit 2 (pair…)

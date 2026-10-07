@@ -1,9 +1,9 @@
 import { formatTokens } from "./format.js";
 import { countEdits } from "./nodes.js";
-import type { MeterLike, SessionLike } from "./types.js";
+import type { MeterLike, Session } from "./types.js";
 
 /** Live budget line(s) for the runtime-context snapshot. */
-export function renderBudget(session: SessionLike, meter: MeterLike | undefined): string {
+export function renderBudget(session: Session, meter: MeterLike | undefined): string {
   const nodes = session.surface.nodes;
   let total: number | undefined;
   if (meter !== undefined) {

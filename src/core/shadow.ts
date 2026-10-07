@@ -1,4 +1,5 @@
-import type { SessionLike } from "./types.js";
+import type { Session } from "./types.js";
+import { asSeq } from "./types.js";
 
 /** Every surface seq shadowed by a replace spanning startSeq..endSeq
  *  POSITIONALLY. session.surface.nodes is a positional seq array — NOT sorted
@@ -7,10 +8,10 @@ import type { SessionLike } from "./types.js";
  *  N" errors) and returns [] when a fresh marker positionally precedes an
  *  older node ("sourceEventSeqs must not be empty"). Mirror the surface
  *  manager's own replacementRange: indexOf + positional slice. */
-export function shadowedSeqsInRange(session: SessionLike, startSeq: number, endSeq: number): number[] {
+export function shadowedSeqsInRange(session: Session, startSeq: number, endSeq: number): number[] {
   const surfaceSeqs = session.surface.nodes;
-  const startIdx = surfaceSeqs.indexOf(startSeq);
-  const endIdx = surfaceSeqs.indexOf(endSeq);
+  const startIdx = surfaceSeqs.indexOf(asSeq(startSeq));
+  const endIdx = surfaceSeqs.indexOf(asSeq(endSeq));
   if (startIdx === -1 || endIdx === -1) {
     throw new Error(`context_edit: span bounds ${startSeq}..${endSeq} are not on the surface (startIdx ${startIdx}, endIdx ${endIdx}) — surface changed since map? Call map to renumber`);
   }

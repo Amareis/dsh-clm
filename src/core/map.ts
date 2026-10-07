@@ -4,10 +4,10 @@ import { buildNodes, buildUnits, lockedZoneStart } from "./nodes.js";
 import { unitPreview } from "./preview.js";
 import { isSnapshotNode, findSnapshotFolds } from "./snapshots.js";
 import { findTxnSpans } from "./txns.js";
-import type { MeterLike, SessionLike, Unit } from "./types.js";
+import type { MeterLike, Session, Unit } from "./types.js";
 
 /** Render the numbered surface map, one line per pair-atomic unit. */
-export function renderMap(session: SessionLike, meter: MeterLike | undefined): string {
+export function renderMap(session: Session, meter: MeterLike | undefined): string {
   const nodes = buildNodes(session, meter);
   const units = buildUnits(nodes);
   const lockedFrom = lockedZoneStart(nodes);

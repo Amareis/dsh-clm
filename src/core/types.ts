@@ -1,12 +1,23 @@
 /**
  * Core domain types for dsh-clm.
  *
- * The core NEVER imports `@deepseek-ai/*`: bundle code cannot resolve those
- * packages at runtime, and pure logic must stay testable without the harness.
- * Everything below is a structural interface the live harness objects satisfy
- * (and the test fakes implement). Type-only imports in the integration layer
- * compile away.
+ * The core NEVER imports `@deepseek-ai/*` at runtime: bundle code cannot
+ * resolve those packages. The `Session` type itself IS a type-only import —
+ * it erases at compile time and gives the core compile-time coupling to the
+ * real session API. Loose structural views (EventShape, MessageShape,
+ * ContentBlock) describe the few fields the core reads; casts at the
+ * session-api boundary bridge them to the harness's branded types.
  */
+import type { Session, SessionSeq } from "@deepseek-ai/dsh-session";
+
+export type { Session };
+
+/** Brand a number as a SessionSeq WITHOUT the runtime brand constructor
+ *  (a runtime import the bundle cannot resolve — the brand is compile-time
+ *  only). Only for seqs that genuinely came from the session log. */
+export function asSeq(seq: number): SessionSeq {
+  return seq as SessionSeq;
+}
 
 /** One content block of a derived message. Fields beyond `type` are optional
  *  because blocks are heterogeneous (text, tool-call, thinking, …). */
@@ -18,7 +29,7 @@ export interface ContentBlock {
   [key: string]: unknown;
 }
 
-/** Structural shape of a derived (model-visible) message. */
+/** Structural view of a derived (model-visible) message. */
 export interface MessageShape {
   role?: string;
   toolCallId?: string;
@@ -32,7 +43,10 @@ export interface MessageShape {
   [key: string]: unknown;
 }
 
-/** Structural shape of a session event (only what the core reads). */
+/** Structural view of a session event (only what the core reads). The real
+ *  SessionEvent union is assignable here; payloads differ per type
+ *  (user/message carries the message directly on data, developer/assistant/
+ *  tool events nest it under data.message). */
 export interface EventShape {
   type: string;
   data?: {
@@ -45,31 +59,16 @@ export interface EventShape {
   [key: string]: unknown;
 }
 
-/** Surface metadata attached to a replacement append. */
+/** Surface metadata attached to a replacement append (loose view of the real
+ *  SurfaceIntent; seqs are branded at the append call site). */
 export interface SurfaceRef {
   surfaceOp: { op: "replace"; startSeq: number; endSeq: number };
   sourceEventSeqs: number[];
 }
 
-/** The minimal session surface the core operates on. */
-export interface SessionLike {
-  /** Next event's sequence number (log length). */
-  readonly seq: number;
-  readonly id?: string | number;
-  /** Positional array of surface event seqs — NOT sorted by seq value:
-   *  a replace splices a fresh (larger) seq between older ones. */
-  readonly surface: { readonly nodes: readonly number[] };
-  eventAt(seq: number): EventShape | undefined;
-  /** Project one event to its model-visible message, or null/undefined when
-   *  the event produces none (empty-content events project to nothing). */
-  deriveEventMessage(event: EventShape | undefined): MessageShape | null | undefined;
-  append(type: string, data: unknown, surfaceRef?: SurfaceRef): unknown;
-  requestContext?(): { contextWindow?: number } | undefined;
-}
-
 /** Token meter service (optional; a char heuristic covers its absence). */
 export interface MeterLike {
-  measure(session: SessionLike): {
+  measure(session: Session): {
     totalTokens: number;
     nodes: ReadonlyArray<{ seq: number; tokens: number }>;
   };

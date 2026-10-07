@@ -3,7 +3,7 @@ import { parseArgs } from "../src/core/args.js";
 import { renderBudget } from "../src/core/budget.js";
 import { formatTokens } from "../src/core/format.js";
 import { renderMap } from "../src/core/map.js";
-import { editableSurface, FakeSession } from "./helpers.js";
+import { editableSurface, newTestSession } from "./helpers.js";
 
 describe("formatTokens", () => {
   it("formats small, K and M magnitudes", () => {
@@ -36,7 +36,7 @@ describe("renderBudget", () => {
   });
   it("escalates at the 50/75/90 thresholds", () => {
     const session = editableSurface();
-    session.contextWindow = 10; // tiny window → ratio ≫ 0.9
+    session.append("request/context", { provider: "test", model: "test", contextWindow: 10 }); // tiny window → ratio ≫ 0.9
     expect(renderBudget(session, undefined)).toContain("Budget past 90%");
   });
   it("counts applied self-edits", () => {
@@ -49,7 +49,7 @@ describe("renderBudget", () => {
 
 describe("renderMap", () => {
   it("says when nothing is editable yet", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys").addUser("u1");
     expect(renderMap(session, undefined)).toContain("nothing editable yet");
   });

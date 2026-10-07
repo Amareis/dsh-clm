@@ -7,19 +7,24 @@ counter.
 
 ## Layout
 
-- `src/core/` — pure logic. **No DSH runtime imports allowed here** (type-only
-  aliases in `types.ts` are the single exception; they erase at compile time).
-  Everything operates on structural interfaces (`SessionLike`, `MeterLike`,
-  `SurfaceLike`).
+- `src/core/` — pure logic. **No DSH RUNTIME imports allowed here** — bundle
+  code cannot resolve `@deepseek-ai/*` at runtime. **Type-only imports are
+  used deliberately**: the core is typed directly against the real
+  `Session`/`SessionSeq` (`@deepseek-ai/dsh-session`) and brand types
+  (`@deepseek-ai/dsh-llm`); they erase at compile time and give compile-time
+  coupling to the real API. Runtime values (e.g. the `SessionSeq()` brand
+  constructor) must NEVER be called — brand via `asSeq()` (`types.ts`) or
+  targeted casts. Loose structural views (`EventShape`, `MessageShape`,
+  `ContentBlock`) cover the fields the core reads.
 - `src/integration/plugin.ts` — the only Cordis/DSH-aware file: tool
   registration, prompt section, runtime-context, debug surface dumps.
 - `index.js` — thin ESM entry re-exporting from `dist/`; the harness loads
   this file.
-- `test/` — vitest suite. `test/helpers.ts` has `FakeSession` implementing
-  the real session's `replacementRange` semantics; `test/real-session.test.ts`
-  runs the same flows against a REAL detached `Session`
-  (`@deepseek-ai/dsh-session`, devDependency — `Session.create()` + `append`,
-  no harness) to catch semantic drift between the fake and the runtime.
+- `test/` — vitest suite. **No fakes**: `test/helpers.ts`
+  (`newTestSession()`) builds a REAL detached `Session`
+  (`Session.create()` from `@deepseek-ai/dsh-session`, a devDependency) and
+  monkey-patches builder methods onto it, so every test runs through the
+  production append validator and surface derivation.
 - `docs/` — research background, engineering log (why the code is the way it
   is), and the compaction-engine spec (next milestone).
 
@@ -95,6 +100,11 @@ throw means an old fiber is still alive; restart in that case.
 6. **Dropped-node accounting:** `surface.nodes` keeps slots for dropped nodes;
    span validation must consult positional shadow accounting
    (`src/core/shadow.ts`), never a naive seq filter.
+7. **tool/result rewrites are content-only.** The real session's
+   `assertToolResultRewrite` deep-compares a tool/result replacement against
+   the shadowed original and rejects any change outside `message.content`
+   (id, source, toolCallId, turn/step are untouchable). Result stubs must
+   keep the original envelope verbatim.
 
 ## Testing expectations
 

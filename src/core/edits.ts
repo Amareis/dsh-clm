@@ -5,7 +5,10 @@ import { shadowedSeqsInRange } from "./shadow.js";
 import { findSnapshotFolds, isSnapshotNode } from "./snapshots.js";
 import { applySpans } from "./spans.js";
 import { findEagerPairSpan, findTxnSpans } from "./txns.js";
-import type { EditInput, MeterLike, SessionLike, SurfaceNode, SweepStats } from "./types.js";
+import { asSeq } from "./types.js";
+import type { EditInput, MeterLike, Session, SurfaceNode, SweepStats } from "./types.js";
+import type { MessageId, MessageSource } from "@deepseek-ai/dsh-llm";
+import type { SessionSeq } from "@deepseek-ai/dsh-session";
 
 /** Compact per-role census of a replaced span, e.g. "2 user, 5 assistant,
  *  10 tool, 3 snapshot". Runtime-context snapshots (user/message role) count
@@ -54,7 +57,7 @@ interface PreparedSpan {
 /** Validate and apply one edit batch; returns the receipt text.
  *  Ranges address UNITS (pair-atomic), so a call/result pair can never be split —
  *  there is no auto-extend; whole-unit spans are balanced by construction. */
-export function applyEdits(session: SessionLike, meter: MeterLike | undefined, edits: EditInput[]): string {
+export function applyEdits(session: Session, meter: MeterLike | undefined, edits: EditInput[]): string {
   const nodes = buildNodes(session, meter);
   const units = buildUnits(nodes);
   const { turn, step } = currentPosition(session);
@@ -134,14 +137,15 @@ export function applyEdits(session: SessionLike, meter: MeterLike | undefined, e
       turn,
       step,
       message: {
-        id: `dsh-clm-${crypto.randomUUID()}`,
+        id: `dsh-clm-${crypto.randomUUID()}` as MessageId,
         role: "developer",
         content: [{ type: "text", text: `${item.marker}\n${item.edit.content}` }],
-        source: { kind: SOURCE_KIND, units: [item.edit.fromUnit, item.edit.toUnit], from: item.edit.spanFrom, to: item.edit.spanTo, turn, step }
+        // Our plugin kind carries bookkeeping fields beyond the base source union.
+        source: { kind: SOURCE_KIND, units: [item.edit.fromUnit, item.edit.toUnit], from: item.edit.spanFrom, to: item.edit.spanTo, turn, step } as unknown as MessageSource
       }
     }, {
-      surfaceOp: { op: "replace", startSeq: item.startSeq, endSeq: item.endSeq },
-      sourceEventSeqs: item.shadowedSeqs
+      surfaceOp: { op: "replace", startSeq: asSeq(item.startSeq), endSeq: asSeq(item.endSeq) },
+      sourceEventSeqs: item.shadowedSeqs as SessionSeq[]
     });
     receipts.push(`#${item.edit.fromUnit}–#${item.edit.toUnit} → 1 node (freed ~${formatTokens(Math.max(0, item.freed))}t)`);
   }

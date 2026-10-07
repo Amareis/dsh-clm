@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildNodes, lockedZoneStart } from "../src/core/nodes.js";
 import { findEagerPairSpan, findTxnSpans, txnSummary } from "../src/core/txns.js";
-import { FakeSession } from "./helpers.js";
+import { newTestSession } from "./helpers.js";
 
 const MAP_RECEIPT = "surface: 20 units (20 nodes), ~1.0K tokens total\nlocked: #0 (system)";
 const EDIT_RECEIPT = "applied 2 edits:\n- #5–#8 → 1 node (freed ~900t)\ncontext: ~1.0K → ~500 tokens";
@@ -20,7 +20,7 @@ describe("txnSummary", () => {
 
 describe("findTxnSpans", () => {
   it("finds a complete pure context_edit pair below the locked zone", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addAssistantCalls([{ id: "m1", name: "context_edit" }]);
     session.addToolResult("m1", MAP_RECEIPT);
@@ -35,7 +35,7 @@ describe("findTxnSpans", () => {
   });
 
   it("is idempotent: an already-stubbed pair never re-matches", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addAssistantCalls([{ id: "m1", name: "context_edit" }]);
     session.addToolResult("m1", MAP_RECEIPT);
@@ -53,7 +53,7 @@ describe("findTxnSpans", () => {
   });
 
   it("stubs only the context_edit result of a MIXED multi-call node", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addAssistantCalls([{ id: "b1", name: "bash" }, { id: "m1", name: "context_edit" }]);
     session.addToolResult("b1", "bash output");
@@ -68,7 +68,7 @@ describe("findTxnSpans", () => {
   });
 
   it("never touches the locked fresh tail (the in-flight pair survives)", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addUser("u1").addAssistantText("a1");
     session.addAssistantCalls([{ id: "m1", name: "context_edit" }]);
@@ -80,7 +80,7 @@ describe("findTxnSpans", () => {
 
 describe("findEagerPairSpan", () => {
   function eagerSetup(opts: { snapshotBetween?: boolean; foreignCall?: boolean; stubbed?: boolean } = {}): ReturnType<typeof buildNodes> {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys"); // 0
     session.addUser("u1"); // 1
     session.addAssistantCalls(opts.foreignCall === true

@@ -3,11 +3,11 @@ import { OLD_FOLD_MARKER } from "../src/core/constants.js";
 import { buildNodes, lockedZoneStart } from "../src/core/nodes.js";
 import { findSnapshotFolds } from "../src/core/snapshots.js";
 import { applySpans } from "../src/core/spans.js";
-import { FakeSession } from "./helpers.js";
+import { newTestSession } from "./helpers.js";
 
 describe("findSnapshotFolds", () => {
   it("folds NOTHING before the first dsh-clm edit (prompt-cache-clean prefix)", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addSnapshot().addSnapshot();
     session.addUser("u1").addAssistantText("a1").addUser("u2");
@@ -16,7 +16,7 @@ describe("findSnapshotFolds", () => {
   });
 
   it("folds every superseded snapshot at/after the first edit, keeping the NEWEST", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addClmNode("[context-edit: replaced units #1–#2 …]"); // first edit
     session.addSnapshot(); // superseded, after firstEdit → folds
@@ -34,7 +34,7 @@ describe("findSnapshotFolds", () => {
   });
 
   it("never folds snapshots BEFORE the first edit (cache-clean prefix)", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addSnapshot(); // before the first edit — cache-clean prefix, off-limits
     session.addClmNode("[context-edit: replaced units #1–#2 …]");
@@ -49,7 +49,7 @@ describe("findSnapshotFolds", () => {
   });
 
   it("migrates a pre-drop fold marker to a drop", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addClmNode("[context-edit: replaced units #1–#2 …]"); // first edit
     session.addClmNode(OLD_FOLD_MARKER, { sweep: true }); // legacy marker
@@ -63,7 +63,7 @@ describe("findSnapshotFolds", () => {
 
 describe("applySpans", () => {
   it("drops produce empty-content events that project to NO wire message", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addSnapshot();
     session.addUser("u1").addAssistantText("a1").addUser("u2").addAssistantText("a2");
@@ -83,7 +83,7 @@ describe("applySpans", () => {
   });
 
   it("stubs keep the tool-role envelope and the call→result link", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addAssistantCalls([{ id: "b1", name: "bash" }, { id: "m1", name: "context_edit" }]);
     session.addToolResult("b1", "bash output");

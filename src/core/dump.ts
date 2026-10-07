@@ -6,10 +6,10 @@
  */
 import { buildNodes } from "./nodes.js";
 import { formatTokens } from "./format.js";
-import type { MeterLike, SessionLike } from "./types.js";
+import type { MeterLike, Session } from "./types.js";
 
 /** Render the full model-visible surface (roles + full node texts) as markdown. */
-export function renderSurfaceDump(session: SessionLike, meter: MeterLike | undefined, tag: string): string {
+export function renderSurfaceDump(session: Session, meter: MeterLike | undefined, tag: string): string {
   const nodes = buildNodes(session, meter);
   const total = nodes.reduce((sum, node) => sum + node.tokens, 0);
   const parts = [

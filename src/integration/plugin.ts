@@ -29,7 +29,7 @@ import { applyEdits } from "../core/edits.js";
 import { renderSurfaceDump } from "../core/dump.js";
 import { renderMap } from "../core/map.js";
 import { countEdits } from "../core/nodes.js";
-import type { MeterLike, SessionLike } from "../core/types.js";
+import type { MeterLike, Session } from "../core/types.js";
 
 const name = PLUGIN_NAME;
 
@@ -57,13 +57,13 @@ interface ToolsService {
     description: string;
     parameters: Record<string, unknown>;
     output: { schema: { type: string }; render: (args: unknown, value: string) => Array<{ type: string; text: string }> };
-    execute: (args: unknown, exec: { agent?: { session: SessionLike } }) => Promise<string>;
+    execute: (args: unknown, exec: { agent?: { session: Session } }) => Promise<string>;
   }): void;
 }
 
 interface SystemPromptService {
   section(definition: { name: string; order: number; text: string }): void;
-  context(definition: { name: string; order: number; text: (context: { agent?: { session: SessionLike } }) => string }): void;
+  context(definition: { name: string; order: number; text: (context: { agent?: { session: Session } }) => string }): void;
 }
 
 /** Debug dump of the full rendered surface (roles + full node texts) to
@@ -71,7 +71,7 @@ interface SystemPromptService {
  *  surface-latest.md is overwritten every call; edit calls also keep a tagged
  *  copy. Node builtins go through process.getBuiltinModule — bundle code cannot
  *  resolve imports. Best-effort: a debug aid must never break the tool. */
-function dumpSurface(session: SessionLike, meter: MeterLike | undefined, tag: string): void {
+function dumpSurface(session: Session, meter: MeterLike | undefined, tag: string): void {
   try {
     const fs = process.getBuiltinModule?.("node:fs") as typeof import("node:fs") | undefined;
     const os = process.getBuiltinModule?.("node:os") as typeof import("node:os") | undefined;

@@ -77,9 +77,9 @@ The session contract mirrors `lib/types/session.d.ts`:
 ```bash
 npm install        # dev-only deps: typescript, vitest, @deepseek-ai type packages
 npm run build      # tsc → dist/ (NodeNext, strict, declarations + sourcemaps)
-npm test           # vitest: 54 tests — FakeSession with exact replacementRange
-                   # semantics, end-to-end flow tests, and real-session
-                   # integration tests driving a detached dsh-session Session
+npm test           # vitest: 51 tests, ALL driving real detached dsh-session
+                   # Sessions (Session.create + production validation) — no
+                   # fakes; test/helpers.ts patches builders onto real Sessions
 npm run check      # typechecks src/ AND test/
 ```
 

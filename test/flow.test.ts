@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { applyEdits } from "../src/core/edits.js";
 import { renderMap } from "../src/core/map.js";
 import { buildNodes } from "../src/core/nodes.js";
-import { FakeSession } from "./helpers.js";
+import { newTestSession, type TestSession } from "./helpers.js";
 
 const MAP_RECEIPT = "surface: 12 units (14 nodes), ~1.0K tokens total\nlocked: #0 (system)";
 
 /** A realistic surface: history, a STALE map pair below the lock, a superseded
  *  snapshot, the planning map pair, and the in-flight edit call. */
-function flowSurface(): FakeSession {
-  const session = new FakeSession();
+function flowSurface(): TestSession {
+  const session = newTestSession();
   session.addSystem("system prompt"); // 0
   session.addUser("user one"); // 1
   session.addAssistantText("answer one"); // 2

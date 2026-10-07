@@ -1,9 +1,10 @@
 import { PROTECT_TAIL, SOURCE_KIND } from "./constants.js";
 import { isToolCallBlock } from "./types.js";
-import type { MeterLike, SessionLike, SurfaceNode, Unit } from "./types.js";
+import type { EventShape, MessageShape, MeterLike, Session, SurfaceNode, Unit } from "./types.js";
+import { asSeq } from "./types.js";
 
 /** Snapshot the current surface: seq, event, derived message, estimated tokens per node. */
-export function buildNodes(session: SessionLike, meter: MeterLike | undefined): SurfaceNode[] {
+export function buildNodes(session: Session, meter: MeterLike | undefined): SurfaceNode[] {
   const seqs = session.surface.nodes;
   const tokenBySeq = new Map<number, number>();
   if (meter !== undefined) {
@@ -16,17 +17,18 @@ export function buildNodes(session: SessionLike, meter: MeterLike | undefined): 
   const nodes: SurfaceNode[] = [];
   for (const seq of seqs) {
     const event = session.eventAt(seq);
+    if (event === undefined) continue;
     // Derive per event, not deriveMessages()[index]: deriveMessages compacts
     // nulls, so positional indexing misaligns once any null-projecting event
     // exists. Empty-content events project to no wire message (dsh-session
     // surface.js) — the model never sees them, so they are not map units.
     // This is what makes drop replacements (content: []) zero-cost.
-    const message = session.deriveEventMessage(event);
+    const message = session.deriveEventMessage(event) as MessageShape | null;
     if (message === null || message === undefined) continue;
     nodes.push({
       index: nodes.length,
       seq,
-      event,
+      event: event as EventShape,
       message,
       tokens: tokenBySeq.get(seq) ?? Math.ceil(JSON.stringify(message.content).length / 4)
     });
@@ -100,16 +102,16 @@ export function lockedZoneStart(nodes: SurfaceNode[]): number {
 }
 
 /** Walk the log tail back to the latest step/start (and turn boundary) — both exist while a tool runs. */
-export function currentPosition(session: SessionLike): { turn: number; step: number; turnStartSeq: number } {
+export function currentPosition(session: Session): { turn: number; step: number; turnStartSeq: number } {
   let turnStartSeq = -1;
   let turn = 0;
   let step = 0;
   for (let seq = session.seq - 1; seq >= 0 && (turnStartSeq === -1 || step === 0); seq -= 1) {
-    const event = session.eventAt(seq);
+    const event = session.eventAt(asSeq(seq));
     if (event === undefined) continue;
     if (event.type === "step/start" && step === 0) {
-      turn = event.data?.turn ?? 0;
-      step = event.data?.step ?? 0;
+      turn = event.data.turn;
+      step = event.data.step;
     } else if (event.type === "turn/start" && turnStartSeq === -1) {
       turnStartSeq = seq;
     }
@@ -118,13 +120,14 @@ export function currentPosition(session: SessionLike): { turn: number; step: num
 }
 
 /** Count durable self-edit nodes already on the surface. */
-export function countEdits(session: SessionLike): number {
+export function countEdits(session: Session): number {
   let count = 0;
   for (const seq of session.surface.nodes) {
     const event = session.eventAt(seq);
-    if (event?.type === "developer/message"
-      && event.data?.message?.source?.kind === SOURCE_KIND
-      && event.data.message.source.sweep !== true) count += 1;
+    if (event?.type !== "developer/message") continue;
+    // Loose view: the real MessageSource union does not list our plugin kind.
+    const message = event.data.message as unknown as MessageShape;
+    if (message.source?.kind === SOURCE_KIND && message.source.sweep !== true) count += 1;
   }
   return count;
 }

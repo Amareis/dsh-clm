@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { buildNodes, buildUnits, computeCutBalances, lockedZoneStart } from "../src/core/nodes.js";
 import { PROTECT_TAIL } from "../src/core/constants.js";
-import { editableSurface, FakeSession } from "./helpers.js";
+import { editableSurface, newTestSession } from "./helpers.js";
 
 describe("buildUnits (pair-atomic units)", () => {
   it("groups an assistant call node with ALL its tool results into one unit", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addAssistantCalls([{ id: "c1", name: "bash" }, { id: "c2", name: "read" }]);
     session.addToolResult("c1", "out1");
@@ -18,7 +18,7 @@ describe("buildUnits (pair-atomic units)", () => {
   });
 
   it("keeps an orphan result (call already off the surface) as a single-node unit", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addToolResult("ghost", "orphan");
     const units = buildUnits(buildNodes(session, undefined));
@@ -28,7 +28,7 @@ describe("buildUnits (pair-atomic units)", () => {
   });
 
   it("marks a call whose result is not yet on the surface as dangling (†)", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addAssistantCalls([{ id: "live", name: "bash" }]);
     const units = buildUnits(buildNodes(session, undefined));
@@ -38,7 +38,7 @@ describe("buildUnits (pair-atomic units)", () => {
 
 describe("computeCutBalances", () => {
   it("is balanced at pair boundaries and open inside a pair", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys"); // 0
     session.addAssistantCalls([{ id: "c1", name: "bash" }]); // 1
     session.addToolResult("c1", "ok"); // 2
@@ -54,7 +54,7 @@ describe("computeCutBalances", () => {
   });
 
   it("treats orphan results as neutral", () => {
-    const session = new FakeSession();
+    const session = newTestSession();
     session.addSystem("sys");
     session.addToolResult("ghost", "orphan");
     const nodes = buildNodes(session, undefined);
