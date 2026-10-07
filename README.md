@@ -126,8 +126,11 @@ composition.
 
 ## Roadmap
 
-1. **`dsh-clm-compaction` engine** (approach C) — see
-   [docs/compaction-engine.md](docs/compaction-engine.md).
+1. **`dsh-clm-compaction` engine** (approach C) — staged plan in
+   [docs/compaction-engine.md](docs/compaction-engine.md) §0: Stage 0 CLM
+   preset port → Stage 1 engine skeleton on the basic path → Stage 2 the
+   three-phase self-edit loop (the core piece) → Stage 3 contract edges →
+   Stage 4 hardening and A/B evaluation.
 2. Host-side pre-step hook: fold a completed `context_edit` pair on the next
    host step instead of waiting for the model's next edit.
 3. GUI: filter dropped (empty) nodes from the session trajectory view.

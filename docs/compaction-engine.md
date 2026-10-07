@@ -8,6 +8,85 @@
 > In approach C the checkpoint content is produced not by a separate LLM
 > summarizer call (as in `dsh-compaction-basic`) but by **the working model
 > itself**, through its own `context_edit` edits.
+>
+> **Staged plan:** §0 below slices the work into demoable milestones; the
+> rest of the document is the full reference design.
+
+---
+
+## 0. Implementation stages
+
+The work is sliced so every stage lands in a working, dogfoodable state —
+no stage leaves the harness broken. Effort estimates assume an engineer
+working with an agent pair.
+
+### Stage 0 — CLM preset port (½ day; self-contained warm-up)
+
+Move the local dogfooding setup into a clean, committed preset patch:
+`dsh-clm` enabled, the `compaction` group still on `compaction-basic`,
+HMR roots configured, budget counter visible. **Exit criteria:** a fresh
+profile boots from the preset, `context_edit` works, `/compact` works via
+basic. **Demo value:** shows the composition layer (preset patches,
+service isolation groups, HMR) and a live self-edit on a seeded long
+session.
+
+### Stage 1 — Engine skeleton, classic behavior (~½–1 day)
+
+`@dsh-experimental/dsh-clm-compaction` package: `class ClmCompactionEngine
+extends BasicCompactionEngine`, the full config surface
+(`maxWaitSteps`, `targetReductionRatio`, `fallback`, `manual`, …) parsed
+but the CLM path not yet active — `compactIfNeeded` behaves exactly like
+basic. Swap the single `compaction-basic` entry in the preset group (§5.1).
+**Exit criteria:** auto-pressure compaction and `/compact` still work
+unchanged with the new backend mounted; config validation errors surface.
+**Demo value:** proves service swap = one YAML line, dynamic dispatch of
+`compactIfNeeded`, and that the transactional machinery is fully inherited.
+
+### Stage 2 — The CLM loop (the core demo, 1–2 days)
+
+The three-phase protocol from §4.2 end to end:
+
+1. **Nudge phase:** `compaction/start` + `clm/compaction-nudge` (log-only)
+   + the developer/message nudge on the surface (span display numbers,
+   budget, deadline). Return `null`.
+2. **Self-edit phase:** `dsh-clm` plugin gains the `compaction:` parameter
+   (§4.5): user/message checkpoint with
+   `source = { kind: 'compact-checkpoint', compactionId, clm: true }`,
+   `compaction/summary` emitted immediately before the replace
+   (contractual adjacency), rejection when no open transaction matches,
+   receipt line with progress toward the budget.
+3. **Close phase:** `isCompactEnough` detector (§4.8) on the next
+   pre-step → `compaction/end` + `CompactionResult`; on timeout →
+   `compaction/end { error: 'clm-timeout' }` → classic fallback via
+   `super.compactRegion` (§4.3).
+
+**Exit criteria:** on a seeded long session, crossing the pressure
+threshold produces a nudge, the model's own `context_edit(compaction: …)`
+lands as a recognized checkpoint, the transaction closes, and a forced
+non-responding model (tool disabled) falls back to the classic path.
+**Demo value:** this is the interview centerpiece — the working model
+compacting itself inside the stock marker protocol, with telemetry/UI
+unaffected. **Explicitly out of scope here:** everything in Stage 3+.
+
+### Stage 3 — Contract edges (~1 day)
+
+- `compactRegion` (§4.7): fixed-span protocol; resolve open question 2
+  (hold the returned promise until close/timeout via a `session/event`
+  subscription).
+- `compactNow` (§4.6): `manual: 'basic' | 'reject'` modes through
+  `runMaintenance`.
+- `fallback: 'off'` mode for clean A/B runs.
+
+**Exit criteria:** `/compact` and explicit-region compaction behave per
+config in all modes.
+
+### Stage 4 — Hardening and evaluation (open-ended)
+
+Resolve the open questions (§6) in order of demo impact: 1 (close timing:
+pre-step lag vs `session/event` listener), 4 (budget-loop de-escalation
+counter), 3 (nudge/auto-recovery race test), 6 (overflow nudge size cap),
+8 (UI "awaiting self-edit" marker), 5 (A/B continuability metric),
+7 (mirror transport-independence).
 
 ---
 
