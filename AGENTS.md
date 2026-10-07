@@ -29,6 +29,51 @@ npm test         # vitest run
 npm run check    # tsc --noEmit
 ```
 
+## Live development (HMR) — read this before touching a running harness
+
+**The trap:** toggling the plugin off/on does **not** reload its code. The
+plugin fiber is recreated, but the entry-point import goes through the
+process-global Node ESM module cache — every session keeps running the version
+that was first imported. An entire dogfooding round was once wasted
+"verifying" a fix that had never loaded (see `docs/engineering-log.md` §3).
+
+**What actually reloads code:** only the HMR subsystem invalidates the module
+cache, and only for files under its configured watch roots (the defaults
+ignore `node_modules` and do not cover a local plugin checkout).
+
+**Setup (once per profile):** enable the `hmr` service and add the plugin's
+real directory to its watch roots in the profile patch
+(`~/.dsh/profiles/<profile>/cordis.patch.yml`). The base composition ships the
+hmr service disabled; the patch flips it on. **The config is per-profile** —
+if you run the plugin in another profile (e.g. `headless`), copy the same
+block into that profile's patch too; profiles do not share watch roots.
+
+```yaml
+- id: hmr
+  disabled: false
+  config:
+    root:
+      - .
+      - /absolute/path/to/dsh-clm   # this repo; resolved by realpath
+```
+
+**Dev loop:** edit `src/` → `npm run build` (or keep `tsc --watch` running) →
+chokidar sees the rebuilt `dist/` files → partial reload (cache clear +
+dispose/re-instantiate) → **live sessions pick the new code up on the next
+step** (tool resolution and system-prompt assembly are per-step). No harness
+restart needed. Fallback with a 100% guarantee: restart the harness.
+
+**Verify the version, never the behavior.** After each reload, confirm the
+running code before interpreting any test outcome:
+
+```
+cordis_inspect_query → host → Tool.listTools → read context_edit's description
+```
+
+(Bump a visible marker in `TOOL_DESCRIPTION` when iterating.) Note that tool
+names cannot be re-registered over an existing registration — a duplicate-name
+throw means an old fiber is still alive; restart in that case.
+
 ## Invariants — do not break these
 
 1. **The session log is append-only.** Edits never mutate history; they commit

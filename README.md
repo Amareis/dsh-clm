@@ -84,6 +84,11 @@ npm test           # vitest: 48 tests incl. a FakeSession with exact
 `dist/` is gitignored — run `npm run build` after cloning before installing
 the plugin into a profile.
 
+For live development against a running harness, see the **HMR section in
+[AGENTS.md](AGENTS.md)** — plugin toggles do not reload code (Node ESM module
+cache); you need the `hmr` service watching this directory, or a harness
+restart.
+
 ## Installing into a DSH profile
 
 Via Plugin Manager (requires approval; affects the whole profile):
