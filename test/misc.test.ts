@@ -29,7 +29,7 @@ describe("parseArgs", () => {
 });
 
 describe("renderBudget", () => {
-  it("renders the plain line below 50%", () => {
+  it("renders the plain line below 70%", () => {
     const session = editableSurface();
     const line = renderBudget(session, undefined);
     expect(line).toMatch(/^context budget: ~\d+% of 100\.0K tokens · self-edits applied: 0$/);
@@ -40,9 +40,11 @@ describe("renderBudget", () => {
       renderBudget(session, { measure: () => ({ totalTokens: n }) } as never);
     expect(at(50_000)).toBe(at(54_999));
     expect(at(50_000)).toContain("~50% of 100.0K tokens");
+    expect(at(50_000)).not.toContain("Budget past"); // no nudge before 70%
     expect(at(55_000)).toContain("~55% of 100.0K tokens");
+    expect(at(70_000)).toContain("Budget past 70%");
   });
-  it("escalates at the 50/75/90 thresholds", () => {
+  it("escalates at the 70/75/90 thresholds", () => {
     const session = editableSurface();
     session.append("request/context", { provider: "test", model: "test", contextWindow: 10 }); // tiny window → ratio ≫ 0.9
     expect(renderBudget(session, undefined)).toContain("Budget past 90%");

@@ -33,13 +33,14 @@ instead of waiting for the harness to compact it on a schedule.
      (nothing between them), that planning pair folds immediately in the same
      transaction instead of waiting one cycle.
 3. **Edit-policy prompt section** `dsh-clm:edit-policy` (order 3200): when to
-   edit (phase boundaries, superseded artifacts, digested tool output, 50% of
+   edit (phase boundaries, superseded artifacts, digested tool output, 70% of
    budget) and what to keep verbatim (user's words, active state, identifiers,
    negative knowledge).
 4. **Live budget counter** — runtime-context `dsh-clm:budget` (order 130),
-   refreshed every step:
-   `context budget: ~39.8K / 262K tokens (15%) · self-edits applied: 2`,
-   with nudge lines at 50/75/90%. Token counting via `ctx.tokenMeter`
+   refreshed every step but re-committed only when the 5%-bucketed text
+   changes:
+   `context budget: ~15% of 262.1K tokens · self-edits applied: 2`,
+   with nudge lines at 70/75/90%. Token counting via `ctx.tokenMeter`
    (fallback: chars/4).
 
 ## Architecture

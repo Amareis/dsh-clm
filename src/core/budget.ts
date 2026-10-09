@@ -30,11 +30,11 @@ export function renderBudget(session: Session, meter: MeterLike | undefined): st
   }
   // Quantize to 5% buckets: the durable snapshot rides history unchanged until
   // the bucket flips, so identical text never re-commits. Threshold lines align
-  // with buckets (50/75/90 are multiples of 5).
+  // with buckets (70/75/90 are multiples of 5).
   const pct = Math.floor((total / window) * 20) * 5;
   const base = `context budget: ~${pct}% of ${formatTokens(window)} tokens · self-edits applied: ${edits}`;
   if (pct >= 90) return `${base}\nBudget past 90% — stop expanding context; run context_edit (map → edit) before any further large reads.`;
   if (pct >= 75) return `${base}\nBudget past 75% — run context_edit now: map the surface, compress completed phases before continuing.`;
-  if (pct >= 50) return `${base}\nBudget past 50% — plan a context_edit pass at the next phase boundary.`;
+  if (pct >= 70) return `${base}\nBudget past 70% — plan a context_edit pass at the next phase boundary.`;
   return base;
 }
