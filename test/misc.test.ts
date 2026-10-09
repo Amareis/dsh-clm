@@ -32,7 +32,15 @@ describe("renderBudget", () => {
   it("renders the plain line below 50%", () => {
     const session = editableSurface();
     const line = renderBudget(session, undefined);
-    expect(line).toMatch(/^context budget: ~\S+ \/ 100\.0K tokens \(\d+%\) · self-edits applied: 0$/);
+    expect(line).toMatch(/^context budget: ~\d+% of 100\.0K tokens · self-edits applied: 0$/);
+  });
+  it("quantizes to 5% buckets so identical text never re-commits", () => {
+    const session = editableSurface();
+    const at = (n: number) =>
+      renderBudget(session, { measure: () => ({ totalTokens: n }) } as never);
+    expect(at(50_000)).toBe(at(54_999));
+    expect(at(50_000)).toContain("~50% of 100.0K tokens");
+    expect(at(55_000)).toContain("~55% of 100.0K tokens");
   });
   it("escalates at the 50/75/90 thresholds", () => {
     const session = editableSurface();

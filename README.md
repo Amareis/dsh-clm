@@ -123,6 +123,9 @@ composition.
   for `dsh-clm-compaction` (approach C), a native CLM condensation engine
   implementing DSH's `dsh-compaction` contract with a pressure-trigger
   protocol and fallback to the basic summarizer.
+- [docs/context-viewer-tab.md](docs/context-viewer-tab.md) — spec for a GUI
+  tab showing the context exactly as the model sees it, with version history
+  sliced by successful `context_edit` calls (pure client-side, event-sourced).
 
 ## Roadmap
 
@@ -131,12 +134,17 @@ composition.
    preset port → Stage 1 engine skeleton on the basic path → Stage 2 the
    three-phase self-edit loop (the core piece) → Stage 3 contract edges →
    Stage 4 hardening and A/B evaluation.
-2. Host-side pre-step hook: fold a completed `context_edit` pair on the next
+2. **Context viewer tab** — GUI tab with the model-visible context and
+   per-edit version history; spec in
+   [docs/context-viewer-tab.md](docs/context-viewer-tab.md). Skeleton tab is
+   live (`@local/clm-context-viewer`): realtime last-10 chat nodes; the
+   surface fold + version slicing come next.
+3. Host-side pre-step hook: fold a completed `context_edit` pair on the next
    host step instead of waiting for the model's next edit.
-3. GUI: filter dropped (empty) nodes from the session trajectory view.
-4. Reconcile the receipt's surface math with the host budget counter (the
+4. GUI: filter dropped (empty) nodes from the session trajectory view.
+5. Reconcile the receipt's surface math with the host budget counter (the
    counter includes system prompt + tool definitions; the receipt doesn't).
-5. Approach B: mirror-file CLM (full paper fidelity) on top of the plugin API.
+6. Approach B: mirror-file CLM (full paper fidelity) on top of the plugin API.
 
 ## Quick check
 
