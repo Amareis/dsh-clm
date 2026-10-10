@@ -109,6 +109,15 @@ non-responding model (tool disabled) falls back to the classic path.
 compacting itself inside the stock marker protocol, with telemetry/UI
 unaffected. **Explicitly out of scope here:** everything in Stage 3+.
 
+**Live finding 2026-10-10 (dogfood attempt #1):** the pressure gate fired
+at the computed threshold in a real session, but the session's compaction
+fiber was the Stage-1 build from harness start — HMR reloads host-plugin
+fibers, NOT the preset-mounted compaction service fiber (startup log:
+`Fiber._reload` errors, `HMR is disposed`). The classic path served the
+trigger instead; no nudge ever fired. Verify the fiber VINTAGE (not the
+dist build) before interpreting any live result; a harness restart is the
+reliable way to load a new engine build. See self-compaction-log entry 2.
+
 ### Stage 3 — Contract edges (~1 day) — ✅ implemented 2026-10-10
 
 Implementation notes:

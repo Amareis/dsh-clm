@@ -66,3 +66,41 @@ Format per entry:
   of the 1M window, so the deferred pass was skipped as unnecessary.
   Thresholds are relative to the routed window — a mid-session window
   change resets the escalation state.
+
+## Entry 2 — 2026-10-10, ~13:45 (turn 13): automatic CLASSIC compaction at the pressure threshold — and a stale-fiber finding
+
+**Trigger.** The automatic pressure gate (`agent/before-step` →
+`compactIfNeeded`) fired at ~60–62% of the 262K window — consistent with
+the computed threshold 163,840 tokens (62.5%) for maxTokens 32768.
+The gate itself is healthy and fired at the designed point.
+
+**What folded.** seqs 10..1681 (everything from the boot checkpoint through
+the overflow-shim work) → one classic one-shot summary (8,424 chars) at
+seq 1939; `compaction/start` 1938 → `compaction/end` 1941, no error.
+The summarizer mostly re-emitted the existing checkpoint summary's
+structure — a graceful fold of an already-condensed span. Budget counter
+dropped ~60% → ~15–20%; `self-edits applied` reset to 0 (the context_edit
+tool pairs were inside the shadowed span — expected accounting, not data
+loss).
+
+**Kept verbatim.** Everything from seq 1682 on: Stage 3 (compactRegion),
+de-escalation, the race test, the viewer badge — all post-span.
+
+**Friction — the real finding.** The running engine behaved as PLAIN BASIC:
+no `clm/compaction-nudge` event, a synchronous one-shot summarizer call
+(the rawOutput reasoning even narrates "this is the classic one-shot
+summarizer format"). The Stage-2+ build cannot reach that path without a
+prior pending transaction (none existed). Conclusion: **the live
+compaction service fiber is the Stage-1 build constructed when the
+harness process started (2026-09-27); it has survived every `npm run
+build` since.** HMR reloads host-plugin fibers (the dsh-clm plugin's v13
+tool description went live) but NOT this preset-mounted service fiber —
+the startup log shows `Fiber._reload` errors and `HMR is disposed`.
+**Implication for dogfooding: verify the fiber vintage, not just the file
+build. The CLM-loop dogfood requires a harness restart** (AGENTS.md's
+"fallback with a 100% guarantee").
+
+**Verdict.** Recovery worked — the session continued coherently from the
+summary; the old 133s summarizer abort did NOT repeat (the fold completed
+inside the step). But the Stage-2 loop remains unverified live: the nudge
+never fired because the nudging code was never running.
