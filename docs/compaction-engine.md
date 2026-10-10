@@ -47,7 +47,7 @@ basic. **Demo value:** shows the composition layer (preset patches,
 service isolation groups, HMR) and a live self-edit on a seeded long
 session.
 
-### Stage 1 — Engine skeleton, classic behavior (~½–1 day)
+### Stage 1 — Engine skeleton, classic behavior (~½–1 day) — ✅ implemented 2026-10-10
 
 `@dsh-experimental/dsh-clm-compaction` package: `class ClmCompactionEngine
 extends BasicCompactionEngine`, the full config surface
@@ -59,7 +59,31 @@ unchanged with the new backend mounted; config validation errors surface.
 **Demo value:** proves service swap = one YAML line, dynamic dispatch of
 `compactIfNeeded`, and that the transactional machinery is fully inherited.
 
-### Stage 2 — The CLM loop (the core demo, 1–2 days)
+### Stage 2 — The CLM loop (the core demo, 1–2 days) — ✅ implemented 2026-10-10 (unit-tested; live dogfood pending)
+
+Implementation notes (deviations from the sketch, all within the design):
+- The phase-1 gate copies basic's module-private helpers into
+  `packages/compaction/src/basic-copies.ts` (`routedTarget`,
+  `resolveTargetPolicy`, `resolveCompactSpec`, `selectCompactableRange`,
+  `inspectCompactionEntryState`) — they are not exported from
+  `dsh-compaction-basic`, and the loop needs the gate WITHOUT the immediate
+  compaction. The fallback delegates to `super.compactIfNeeded` (basic
+  re-measures, so pressure already fixed by a param-less edit does not
+  double-compact).
+- The nudge addresses the span by MAP NODE POSITIONS + first/last node
+  previews (the engine cannot know `context_edit` unit numbers — the map
+  projection lives in the plugin). `Session.append` accepts the custom
+  `clm/compaction-nudge` event type (verified against the real validator);
+  the plugin reads the budget back from it — engine↔tool coupling stays
+  log-only.
+- Re-nudge only on visible progress (the coverage price decreased), never
+  under the overflow trigger (every extra node hurts there — §6.6).
+- `compactRegion` is NOT overridden yet (Stage 3); the inherited basic
+  implementation serves the fallback via `super.compactIfNeeded`.
+- Tests: `packages/compaction/test/loop.test.ts` (6 tests — full loop on a
+  real detached Session with a structural fake ctx) and
+  `test/checkpoint.test.ts` (6 tests — checkpoint mode, adjacency, framing,
+  typo rejection).
 
 The three-phase protocol from §4.2 end to end:
 

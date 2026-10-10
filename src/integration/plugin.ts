@@ -28,6 +28,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { parseArgs } from "../core/args.js";
 import { renderBudget } from "../core/budget.js";
 import { PLUGIN_NAME, TOOL_NAME } from "../core/constants.js";
+import { findOpenCompaction } from "../core/compaction.js";
 import { applyEdits } from "../core/edits.js";
 import { renderSurfaceDump } from "../core/dump.js";
 import { renderMap } from "../core/map.js";
@@ -39,7 +40,9 @@ const name = PLUGIN_NAME;
 /** Hard dependencies; systemPrompt and tokenMeter are optional (ctx.inject / ctx.get). */
 const inject = ["tools"];
 
-const TOOL_DESCRIPTION = `View and rewrite this conversation's own context. (v12: pair-atomic map units — an assistant message with tool calls plus ALL its tool results is ONE numbered unit, so an edit can never split a call/result pair: prevention at planning time, no auto-extend. op=map is a pure read — stale context_edit transaction traces are marked "⏳ folds on next edit" and superseded runtime-context snapshots are hidden outright (counted in the map footer); both collapse inside the next op=edit (one log rewrite per transaction; snapshots fold only at/after the first edit point — the prompt-cache-clean prefix is never touched). Pure context_edit call+result pairs collapse into one-line markers; in a mixed multi-call node (context_edit sharing an assistant node with other tools) only the stale context_edit result is stubbed in place — the node and the call→result link stay.) When an edit call directly follows its planning map (nothing but runtime-context snapshots between), that map pair collapses IMMEDIATELY in the same transaction; the edit call's own trace collapses on the next edit as usual.
+const TOOL_DESCRIPTION = `View and rewrite this conversation's own context. (v13: pair-atomic map units — an assistant message with tool calls plus ALL its tool results is ONE numbered unit, so an edit can never split a call/result pair: prevention at planning time, no auto-extend. op=map is a pure read — stale context_edit transaction traces are marked "⏳ folds on next edit" and superseded runtime-context snapshots are hidden outright (counted in the map footer); both collapse inside the next op=edit (one log rewrite per transaction; snapshots fold only at/after the first edit point — the prompt-cache-clean prefix is never touched). Pure context_edit call+result pairs collapse into one-line markers; in a mixed multi-call node (context_edit sharing an assistant node with other tools) only the stale context_edit result is stubbed in place — the node and the call→result link stay.) When an edit call directly follows its planning map (nothing but runtime-context snapshots between), that map pair collapses IMMEDIATELY in the same transaction; the edit call's own trace collapses on the next edit as usual.
+
+Compaction mode: when a [clm-compaction <id>] nudge appears in the conversation, the compaction engine has opened a self-edit transaction for the span it names. Answer it with op=edit plus the \`compaction\` parameter set to that id: the replacements then commit as recognized compaction checkpoints counting toward the transaction's token budget, and the receipt reports progress against the target. An edit with a \`compaction\` id that has no open transaction is rejected.
 
 op=map lists the units currently in your context as numbered lines (#N(#a..#b), role, ~tokens, preview) — #N is the unit number, (#a..#b) the original node span it covers. op=edit permanently replaces numbered unit ranges with shorter text you write, freeing context; removed messages stay in the durable session log but leave the model-visible history. Ranges in one call share the most recent map's numbering and are applied highest-first, so earlier numbers stay valid within the call. Adjacent units in one edit merge into a single contiguous span.
 
@@ -49,7 +52,9 @@ const SECTION_TEXT = `## Context self-editing
 
 This session lets you maintain your own context with the \`context_edit\` tool; the runtime budget counter shows live usage. You edit whole numbered units: a unit is either a single message or an atomic call group (an assistant message plus all its tool results) — plan boundaries by units, never inside a group. Edit at natural boundaries: a completed phase or subtask; an artifact superseding its earlier drafts (keep the final, compress the rest); large tool output you have already digested; a mode switch; the counter crossing 70%.
 
-Keep verbatim: the user's original goal, their exact words and decisions; active state you still need (current plan, open questions); exact identifiers, paths, and commands you will reuse; negative knowledge ("X does not work because…"). Make every replacement self-describing about what it compressed, and batch related ranges into one edit call.`;
+Keep verbatim: the user's original goal, their exact words and decisions; active state you still need (current plan, open questions); exact identifiers, paths, and commands you will reuse; negative knowledge ("X does not work because…"). Make every replacement self-describing about what it compressed, and batch related ranges into one edit call.
+
+Compaction transactions: a \`[clm-compaction <id>]\` developer message means the compaction engine has opened a timed self-edit transaction over a named span with a token budget. Treat it as high priority: call map, locate the units covering the span, and fold them in one op=edit call with \`compaction\` set to the id. These checkpoint edits follow the same rules as ordinary ones (keep verbatim list above); only the commit form differs. Missing the deadline triggers a dumber one-shot fallback summary, so a timely self-edit is strictly better.`;
 
 /** Structural shapes of the harness services this plugin touches — the
  *  harness's ambient service declarations are unavailable to bundle code, so
@@ -122,6 +127,10 @@ function apply(ctx: Context): void {
             additionalProperties: false
           },
           description: "Required for op=edit. Ranges share the most recent map's numbering and apply highest-first."
+        },
+        compaction: {
+          type: "string",
+          description: "Optional compaction transaction id from a [clm-compaction <id>] nudge. Marks this edit as the answer to that transaction: replacements commit as compaction checkpoints with budget metering. Rejected when no open transaction has this id."
         }
       },
       additionalProperties: false
@@ -133,13 +142,20 @@ function apply(ctx: Context): void {
     async execute(args, exec) {
       const agent = exec.agent;
       if (agent === undefined) throw new Error("context_edit: no agent session on this call");
-      const { op, edits } = parseArgs(args);
+      const { op, edits, compaction } = parseArgs(args);
       if (op === "map") {
         const map = renderMap(agent.session, meter);
         dumpSurface(agent.session, meter, "map");
         return map;
       }
-      const receipt = applyEdits(agent.session, meter, edits!);
+      let open;
+      if (compaction !== undefined) {
+        open = findOpenCompaction(agent.session, compaction);
+        if (open === undefined) {
+          throw new Error(`context_edit: no open compaction transaction with id "${compaction}" — it may have timed out or closed already; check for a fresh [clm-compaction …] nudge, or edit without the compaction parameter`);
+        }
+      }
+      const receipt = applyEdits(agent.session, meter, edits!, open);
       dumpSurface(agent.session, meter, `after-edit-${countEdits(agent.session)}`);
       return receipt;
     }

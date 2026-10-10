@@ -51,10 +51,14 @@ instead of waiting for the harness to compact it on a schedule.
 This repo is the CLM toolkit monorepo: the `context_edit` plugin at the root
 (package `@local/dsh-clm`) plus sibling packages under `packages/`:
 
-- `packages/compaction/` — `@local/dsh-clm-compaction`, the Stage-1 CLM
-  compaction engine: `ClmCompactionEngine extends BasicCompactionEngine`
+- `packages/compaction/` — `@local/dsh-clm-compaction`, the CLM compaction
+  engine: `ClmCompactionEngine extends BasicCompactionEngine`
   (approach C, spec in [docs/compaction-engine.md](docs/compaction-engine.md)).
-  Behavior is identical to basic; the self-edit loop lands in Stage 2. The
+  Stage 2 is live: on pressure the engine opens a `compaction/start`
+  transaction and nudges the model, which condenses the span itself via
+  `context_edit(compaction: …)` checkpoints (committed as stock
+  `compact-checkpoint` user messages with `compaction/summary` metering);
+  a missed deadline falls back to the inherited classic path. The
   package imports the harness's OWN modules through symlinks created by
   `scripts/link-harness.mjs` (postinstall) so `instanceof` identity holds.
 - `packages/viewer/` — `@local/clm-context-viewer`, the context viewer tab
@@ -163,8 +167,9 @@ composition.
 1. **`dsh-clm-compaction` engine** (approach C) — staged plan in
    [docs/compaction-engine.md](docs/compaction-engine.md) §0: ~~Stage 0 CLM
    preset port~~ (generated, `packages/preset`) → ~~Stage 1 engine skeleton
-   on the basic path~~ (`packages/compaction`) → Stage 2 the three-phase
-   self-edit loop (the core piece) → Stage 3 contract edges → Stage 4
+   on the basic path~~ (`packages/compaction`) → ~~Stage 2 the three-phase
+   self-edit loop~~ (engine + `context_edit(compaction: …)` checkpoint mode;
+   unit-tested, live dogfood pending) → Stage 3 contract edges → Stage 4
    hardening and A/B evaluation.
 2. **Context viewer tab** — GUI tab with the model-visible context and
    per-edit version history; spec in

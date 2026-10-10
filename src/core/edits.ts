@@ -1,3 +1,5 @@
+import { CHECKPOINT_PREAMBLE, SUMMARY_CLOSE_TAG, SUMMARY_OPEN_TAG } from "./compaction.js";
+import type { OpenCompaction } from "./compaction.js";
 import { PROTECT_TAIL, SOURCE_KIND } from "./constants.js";
 import { formatTokens } from "./format.js";
 import { buildNodes, buildUnits, computeCutBalances, currentPosition, lockedZoneStart } from "./nodes.js";
@@ -50,14 +52,20 @@ interface PreparedSpan {
   startSeq: number;
   endSeq: number;
   shadowedSeqs: number[];
+  spanTokens: number;
   freed: number;
   marker: string;
 }
 
 /** Validate and apply one edit batch; returns the receipt text.
  *  Ranges address UNITS (pair-atomic), so a call/result pair can never be split —
- *  there is no auto-extend; whole-unit spans are balanced by construction. */
-export function applyEdits(session: Session, meter: MeterLike | undefined, edits: EditInput[]): string {
+ *  there is no auto-extend; whole-unit spans are balanced by construction.
+ *  With `compaction` (an open transaction from findOpenCompaction) the batch
+ *  runs in checkpoint mode (spec §4.5): each replace is metered by a
+ *  `compaction/summary` event appended immediately before it, and the
+ *  replacement is a `user/message` checkpoint with
+ *  `source = { kind: 'compact-checkpoint', compactionId, clm: true }`. */
+export function applyEdits(session: Session, meter: MeterLike | undefined, edits: EditInput[], compaction?: OpenCompaction): string {
   const nodes = buildNodes(session, meter);
   const units = buildUnits(nodes);
   const { turn, step } = currentPosition(session);
@@ -125,14 +133,43 @@ export function applyEdits(session: Session, meter: MeterLike | undefined, edits
     const startSeq = span[0]!.seq;
     const endSeq = span[span.length - 1]!.seq;
     const shadowedSeqs = shadowedSeqsInRange(session, startSeq, endSeq);
-    const freed = span.reduce((sum, node) => sum + node.tokens, 0) - Math.ceil(edit.content.length / 4);
+    const spanTokens = span.reduce((sum, node) => sum + node.tokens, 0);
+    const freed = spanTokens - Math.ceil(edit.content.length / 4);
     const marker = `[context-edit: replaced units #${edit.fromUnit}–#${edit.toUnit} (${summarizeSpanRoles(span)}, freed ~${formatTokens(Math.max(0, freed))}t)]`;
-    prepared.push({ edit, startSeq, endSeq, shadowedSeqs, freed, marker });
+    prepared.push({ edit, startSeq, endSeq, shadowedSeqs, spanTokens, freed, marker });
   }
   // Phase 2: apply (highest span first — lower spans' positional ranges are
   // untouched by higher replaces, so the precomputed shadowed seqs stay exact).
   const receipts: string[] = [];
+  const route = (session.requestHeader() as { config?: { provider?: string; model?: string } } | null)?.config;
   for (const item of prepared) {
+    if (compaction !== undefined) {
+      // Checkpoint mode (spec §4.5.1): meter the replace with a
+      // `compaction/summary` event IMMEDIATELY before it (contractual
+      // shadow-price adjacency), then commit a user/message checkpoint the
+      // stock UI recognizes structurally.
+      const summaryEvent = (session.append as (type: string, data: unknown) => { seq: number })("compaction/summary", {
+        compactionId: compaction.compactionId,
+        summary: [{ type: "text", text: item.edit.content }],
+        shadowedRange: { start: item.startSeq, end: item.endSeq },
+        shadowedSeqs: item.shadowedSeqs,
+        shadowedTokenCount: item.spanTokens,
+        provider: route?.provider ?? "unknown",
+        model: route?.model ?? "unknown",
+      });
+      session.append("user/message", {
+        id: `dsh-clm-${crypto.randomUUID()}` as MessageId,
+        role: "user",
+        content: [{ type: "text", text: `${CHECKPOINT_PREAMBLE}\n\n${SUMMARY_OPEN_TAG}\n${item.edit.content}\n${SUMMARY_CLOSE_TAG}` }],
+        source: { kind: "compact-checkpoint", compactionId: compaction.compactionId, clm: true } as unknown as MessageSource
+      }, {
+        surfaceOp: { op: "replace", startSeq: asSeq(item.startSeq), endSeq: asSeq(item.endSeq) },
+        sourceEventSeqs: [asSeq(compaction.startSeq), asSeq(summaryEvent.seq), ...item.shadowedSeqs] as SessionSeq[]
+      });
+      const target = compaction.budgetTokens === undefined ? "" : `, target ≤ ${formatTokens(compaction.budgetTokens)}t`;
+      receipts.push(`#${item.edit.fromUnit}–#${item.edit.toUnit} → 1 checkpoint node (freed ~${formatTokens(Math.max(0, item.freed))}t; compaction ${compaction.compactionId}: span ~${formatTokens(item.spanTokens)}t → ~${formatTokens(Math.ceil(item.edit.content.length / 4))}t${target})`);
+      continue;
+    }
     session.append("developer/message", {
       turn,
       step,

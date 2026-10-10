@@ -28,8 +28,11 @@ counter.
 - `docs/` — research background, engineering log (why the code is the way it
   is), the compaction-engine spec (Stages 2+), and the self-compaction
   dogfooding log.
-- `packages/compaction/` — `@local/dsh-clm-compaction`, Stage-1 CLM
-  compaction engine. **Opposite import rule from the core**: it value-imports
+- `packages/compaction/` — `@local/dsh-clm-compaction`, the CLM compaction
+  engine (Stage 2: the three-phase self-edit loop — `compactIfNeeded` opens
+  a transaction and nudges the model, `context_edit(compaction: …)`
+  checkpoints close it, a missed deadline falls back to the inherited basic
+  path). **Opposite import rule from the core**: it value-imports
   the harness's OWN `@deepseek-ai/dsh-compaction{,-basic}` through symlinks
   (`scripts/link-harness.mjs`, run by postinstall; set
   `DSH_RUNTIME_NODE_MODULES` when the harness is not under `~/.npm/_npx`) so
