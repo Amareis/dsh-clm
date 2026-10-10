@@ -317,3 +317,73 @@ describe("overflow-wording shim (spec §6 item 9)", () => {
     expect(ctx.listeners.get("agent/request-error") ?? []).toHaveLength(0);
   });
 });
+
+describe("compactRegion (spec §4.7)", () => {
+  /** compactRegion's CLM path requires an open turn (basic contract). */
+  function openTurn(session: Session, turn = 1): void {
+    append(session, "turn/start", { turn });
+  }
+
+  it("opens a fixed-span transaction and resolves the held promise at the close", async () => {
+    const session = longSession();
+    openTurn(session);
+    const { engine } = makeEngine({ maxWaitSteps: 2 });
+    const surface = session.surface.nodes as unknown as number[];
+    const startSeq = surface[1]!;
+    const endSeq = surface[4]!;
+    const held = engine.compactRegion(startSeq as never, endSeq as never, agent(session), SIGNAL);
+    // The promise is held; the transaction is open with a nudge.
+    const starts = events(session, "compaction/start");
+    expect(starts).toHaveLength(1);
+    const compactionId = starts[0]!.data.compactionId as string;
+    expect(events(session, "developer/message")).toHaveLength(1);
+
+    // The model answers with a checkpoint over the exact span; the next
+    // pre-step closes and the held promise resolves.
+    const shadowed = surface.slice(1, 5);
+    commitCheckpoint(session, compactionId, startSeq, endSeq, shadowed, "[region checkpoint]");
+    const closed = await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
+    expect(closed).not.toBeNull();
+    const result = await held;
+    expect(result.compactionId).toBe(compactionId);
+    expect(JSON.stringify(result.summary)).toContain("[region checkpoint]");
+    expect(events(session, "compaction/end")).toHaveLength(1);
+  });
+
+  it("rejects the held promise on timeout with fallback 'off'", async () => {
+    const session = longSession();
+    openTurn(session);
+    const { engine } = makeEngine({ maxWaitSteps: 1, fallback: "off" });
+    const surface = session.surface.nodes as unknown as number[];
+    const held = engine.compactRegion(surface[1] as never, surface[3] as never, agent(session), SIGNAL);
+    const assertion = expect(held).rejects.toThrow(/clm-timeout/);
+    await engine.compactIfNeeded(agent(session), "pressure", SIGNAL); // waited 1
+    await engine.compactIfNeeded(agent(session), "pressure", SIGNAL); // waited 2 > 1 → timeout
+    await assertion;
+    expect(events(session, "compaction/end")[0]!.data.error).toMatch(/clm-timeout/);
+  });
+
+  it("rejects the held promise on abort and closes with clm-aborted", async () => {
+    const session = longSession();
+    openTurn(session);
+    const { engine } = makeEngine();
+    const surface = session.surface.nodes as unknown as number[];
+    const controller = new AbortController();
+    const held = engine.compactRegion(surface[1] as never, surface[3] as never, agent(session), controller.signal);
+    const assertion = expect(held).rejects.toThrow();
+    controller.abort();
+    await assertion;
+    expect(events(session, "compaction/end")[0]!.data.error).toMatch(/clm-aborted/);
+  });
+
+  it("throws when another CLM transaction is already open", async () => {
+    const session = longSession();
+    openTurn(session);
+    const { engine } = makeEngine();
+    const surface = session.surface.nodes as unknown as number[];
+    void engine.compactRegion(surface[1] as never, surface[3] as never, agent(session), SIGNAL);
+    await expect(
+      engine.compactRegion(surface[4] as never, surface[6] as never, agent(session), SIGNAL),
+    ).rejects.toThrow(/already open/);
+  });
+});

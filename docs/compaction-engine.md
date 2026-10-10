@@ -109,7 +109,24 @@ non-responding model (tool disabled) falls back to the classic path.
 compacting itself inside the stock marker protocol, with telemetry/UI
 unaffected. **Explicitly out of scope here:** everything in Stage 3+.
 
-### Stage 3 — Contract edges (~1 day)
+### Stage 3 — Contract edges (~1 day) — ✅ implemented 2026-10-10
+
+Implementation notes:
+- `compactRegion` (§4.7) opens the same async transaction over the FIXED
+  span (basic's validateSurfaceRegion checks copied: positions exist,
+  ordered, tool-pairing balanced) and HOLDS the returned promise until the
+  close detector fires on a later pre-step (open question 2 resolved as
+  sketched: a waiter on the pending entry, settled by closeTransaction /
+  settleRegionFallback / the abort listener — no session/event
+  subscription needed since the close already runs on pre-steps). Timeout
+  or abort fulfills the promise via the classic compaction of the same
+  span (super.compactRegion), or rejects it for fallback 'off'/'fail'.
+  With another transaction open it throws; outside a turn it defers to the
+  classic path (basic would throw there anyway).
+- `compactNow` modes and `fallback: 'off'` landed with Stages 1–2.
+- Tests: 4 new (fixed-span open + held-promise close; timeout rejection;
+  abort rejection with clm-aborted; double-open rejection). 81/81 green.
+
 
 - `compactRegion` (§4.7): fixed-span protocol; resolve open question 2
   (hold the returned promise until close/timeout via a `session/event`

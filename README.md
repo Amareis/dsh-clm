@@ -169,8 +169,10 @@ composition.
    preset port~~ (generated, `packages/preset`) → ~~Stage 1 engine skeleton
    on the basic path~~ (`packages/compaction`) → ~~Stage 2 the three-phase
    self-edit loop~~ (engine + `context_edit(compaction: …)` checkpoint mode;
-   unit-tested, live dogfood pending) → Stage 3 contract edges → Stage 4
-   hardening and A/B evaluation.
+   unit-tested, live dogfood pending) → ~~Stage 3 contract edges~~
+   (compactRegion holds its promise until close/timeout; overflow-wording
+   shim for provider wordings dsh-llm misses) → Stage 4 hardening and A/B
+   evaluation.
 2. **Context viewer tab** — GUI tab with the model-visible context and
    per-edit version history; spec in
    [docs/context-viewer-tab.md](docs/context-viewer-tab.md). The full fold +

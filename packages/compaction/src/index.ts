@@ -175,10 +175,19 @@ interface PendingClm {
   readonly budgetTokens: number;
   readonly turn: number | null;
   readonly trigger: Trigger;
+  /** Origin: automatic pressure/overflow selection, or a fixed explicit
+   *  span from compactRegion (whose fallback is the classic compaction of
+   *  THAT span, and whose caller holds a waiter promise — spec §4.7). */
+  readonly origin: "auto" | "region";
   /** Pre-step calls observed while waiting (the step clock). */
   stepsWaited: number;
   /** Last measured coverage price — re-nudge only on visible progress. */
   lastPrice: number;
+  /** compactRegion's held promise (spec §6 open question 2). */
+  waiter?: {
+    resolve: (result: CompactionResultT) => void;
+    reject: (error: unknown) => void;
+  };
 }
 
 /** Loose event shape for log scans (the session event union is harness-side). */
@@ -342,13 +351,17 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       const maxWait = pending.trigger === "context-overflow" ? this.clm.overflowMaxWaitSteps : this.clm.maxWaitSteps;
       if (pending.stepsWaited > maxWait || signal.aborted) {
         this.pending.delete(session);
+        const errorText = signal.aborted
+          ? "clm-aborted: the turn was cancelled while awaiting self-edit"
+          : `clm-timeout: self-edit did not reach the budget within ${maxWait} steps`;
         (session.append as (type: string, data: unknown) => unknown)("compaction/end", {
           compactionId: pending.compactionId,
           turn: pending.turn,
-          error: signal.aborted
-            ? "clm-aborted: the turn was cancelled while awaiting self-edit"
-            : `clm-timeout: self-edit did not reach the budget within ${maxWait} steps`,
+          error: errorText,
         });
+        if (pending.origin === "region") {
+          return await this.settleRegionFallback(agent, pending, signal, errorText);
+        }
         return this.fallbackCompact(agent, trigger, signal);
       }
       // Re-nudge only on visible progress; a silent wait means the model is
@@ -415,6 +428,7 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       budgetTokens: Math.max(1, Math.floor(baselineTokens * this.clm.targetReductionRatio)),
       turn: entry.openTurn,
       trigger,
+      origin: "auto",
       stepsWaited: 0,
       lastPrice: baselineTokens,
     };
@@ -530,7 +544,7 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       turn: pending.turn,
     });
     const lastSummary = summaries[summaries.length - 1];
-    return {
+    const result = {
       compactionId: pending.compactionId,
       startSeq: pending.startSeq,
       summarySeq: lastSummary?.seq ?? pending.startSeq,
@@ -540,6 +554,123 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       shadowedSeqs: [...pending.shadowedSeqs],
       shadowedTokenCount: pending.baselineTokens,
     } as unknown as CompactionResultT;
+    pending.waiter?.resolve(result);
+    return result;
+  }
+
+  /**
+   * Fixed-span fallback for a timed-out/aborted compactRegion (spec §4.7):
+   * the classic compaction of THAT span fulfills the caller's held promise;
+   * 'off'/'fail' reject it. The pre-step that detected the timeout returns
+   * null either way — the error travels through the waiter, not the
+   * pre-step listener.
+   */
+  private async settleRegionFallback(
+    agent: Agent,
+    pending: PendingClm,
+    signal: AbortSignal,
+    errorText: string,
+  ) {
+    const waiter = pending.waiter;
+    try {
+      if (this.clm.fallback === "off") throw new Error(`dsh-clm-compaction: ${errorText}`);
+      if (this.clm.fallback === "fail") {
+        throw new Error("dsh-clm-compaction: self-edit transaction failed and fallback is 'fail'");
+      }
+      const result = await super.compactRegion(pending.span.start, pending.span.end, agent, signal);
+      waiter?.resolve(result as unknown as CompactionResultT);
+      return null;
+    } catch (error) {
+      waiter?.reject(error);
+      if (waiter === undefined) throw error;
+      return null;
+    }
+  }
+
+  /**
+   * Explicit-span compaction (spec §4.7): the same async protocol as the
+   * pressure path — validate the fixed span's balanced edges, open the
+   * transaction, nudge with the exact span — but the returned promise is
+   * HELD until the close detector fires on a later pre-step (open question
+   * 2), then resolves with the CompactionResult; on timeout/abort the
+   * classic compaction of the same span fulfills it (or rejects for
+   * 'off'/'fail'). With another transaction already open, or when called
+   * outside a turn, the classic synchronous path keeps the contract.
+   */
+  override async compactRegion(
+    start: Parameters<BasicCompactionEngine["compactRegion"]>[0],
+    end: Parameters<BasicCompactionEngine["compactRegion"]>[1],
+    agent: Parameters<BasicCompactionEngine["compactRegion"]>[2],
+    signal?: Parameters<BasicCompactionEngine["compactRegion"]>[3],
+  ): Promise<CompactionResultT> {
+    const session = agent.session as unknown as Session;
+    if (this.pending.has(session)) {
+      throw new Error("dsh-clm-compaction: a CLM self-edit transaction is already open on this session");
+    }
+    const entry = inspectCompactionEntryState(session);
+    if (entry.unmatchedCompactionStart !== undefined || entry.openTurn === null) {
+      return super.compactRegion(start, end, agent, signal);
+    }
+    // Validate the fixed span exactly like basic's validateSurfaceRegion.
+    const surfaceNodes = session.surface.nodes as readonly SessionSeq[];
+    const startIdx = surfaceNodes.indexOf(start as unknown as SessionSeq);
+    const endIdx = surfaceNodes.indexOf(end as unknown as SessionSeq);
+    if (startIdx === -1) throw new Error(`compactRegion: start seq ${String(start)} not found in surface`);
+    if (endIdx === -1) throw new Error(`compactRegion: end seq ${String(end)} not found in surface`);
+    if (startIdx > endIdx) {
+      throw new Error(`compactRegion: start seq ${String(start)} (position ${startIdx}) is after end seq ${String(end)} (position ${endIdx}) on the surface`);
+    }
+    if (!toolPairingBalancedBefore(session, surfaceNodes[startIdx]!)) {
+      throw new Error(`compactRegion: start seq ${String(start)} is not a balanced boundary (would split a step's tool-call/result pair)`);
+    }
+    if (!toolPairingBalancedAfter(session, surfaceNodes[endIdx]!)) {
+      throw new Error(`compactRegion: end seq ${String(end)} is not a balanced boundary (would split a step, or the step is still open)`);
+    }
+    const measurement = this.measure(session);
+    const pricedSpan = measurement.nodes.slice(startIdx, endIdx + 1);
+    const baselineTokens = pricedSpan.reduce((sum, node) => sum + node.heuristicTokens, 0);
+    const compactionId = CompactionId(randomUUID());
+    const startEvent = session.append("compaction/start", { compactionId, turn: entry.openTurn }) as unknown as LogEvent;
+    const pending: PendingClm = {
+      compactionId,
+      startSeq: startEvent.seq,
+      span: { start: start as unknown as SessionSeq, end: end as unknown as SessionSeq },
+      shadowedSeqs: pricedSpan.map((node) => node.seq),
+      baselineTokens,
+      budgetTokens: Math.max(1, Math.floor(baselineTokens * this.clm.targetReductionRatio)),
+      turn: entry.openTurn,
+      trigger: "pressure",
+      origin: "region",
+      stepsWaited: 0,
+      lastPrice: baselineTokens,
+    };
+    (session.append as (type: string, data: unknown, intent?: unknown) => unknown)("clm/compaction-nudge", {
+      compactionId,
+      span: pending.span,
+      baselineTokens,
+      budgetTokens: pending.budgetTokens,
+      deadlineSteps: this.clm.maxWaitSteps,
+    }, { ignorable: true });
+    this.pending.set(session, pending);
+    this.nudge(session, pending);
+    // Hold the promise until the close detector fires on a later pre-step
+    // (spec §6 open question 2); abort settles immediately.
+    return await new Promise<CompactionResultT>((resolve, reject) => {
+      pending.waiter = {
+        resolve: resolve as (result: CompactionResultT) => void,
+        reject,
+      };
+      signal?.addEventListener("abort", () => {
+        if (!this.pending.has(session)) return;
+        this.pending.delete(session);
+        (session.append as (type: string, data: unknown) => unknown)("compaction/end", {
+          compactionId,
+          turn: pending.turn,
+          error: "clm-aborted: compactRegion's signal fired while awaiting self-edit",
+        });
+        reject(signal.reason instanceof Error ? signal.reason : new Error("compactRegion aborted"));
+      }, { once: true });
+    });
   }
 
   /** Classic fallback after a failed self-edit (spec §4.3): the inherited
