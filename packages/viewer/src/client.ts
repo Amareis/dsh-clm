@@ -121,6 +121,12 @@ interface PendingEdit {
   nodes: FoldNode[];
 }
 
+interface OpenCompaction {
+  compactionId: string;
+  budgetTokens?: number;
+  deadlineSteps?: number;
+}
+
 interface FoldState {
   seq: number;
   time: number;
@@ -129,6 +135,7 @@ interface FoldState {
   versions: Version[];
   pending: PendingEdit | null;
   compactionHint: boolean;
+  openCompaction: OpenCompaction | null;
   open: Boundary | null;
 }
 
@@ -279,6 +286,7 @@ window.__ModuleLoader__.load({
       return SURFACE_TYPES.has(event.type)
         || event.type === "tool/call"
         || COMPACTION_HINT_TYPES.has(event.type)
+        || event.type === "clm/compaction-nudge"
         || event.type === "compaction/end";
     }
 
@@ -290,6 +298,7 @@ window.__ModuleLoader__.load({
       versions: [],
       pending: null,
       compactionHint: false,
+      openCompaction: null,
       open: null,
     };
 
@@ -395,11 +404,28 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // 2. compaction attribution
-      if (COMPACTION_HINT_TYPES.has(event.type)) {
+      // 2. compaction attribution + live "awaiting self-edit" state (the
+      // CLM loop keeps compaction/start → end open across ordinary steps).
+      if (event.type === "compaction/start") {
+        state = {
+          ...state, compactionHint: true,
+          openCompaction: { compactionId: String(event.data && event.data.compactionId || "") },
+        };
+      } else if (event.type === "clm/compaction-nudge") {
+        if (state.openCompaction && event.data && event.data.compactionId === state.openCompaction.compactionId) {
+          state = {
+            ...state,
+            openCompaction: {
+              ...state.openCompaction,
+              budgetTokens: typeof event.data.budgetTokens === "number" ? event.data.budgetTokens : undefined,
+              deadlineSteps: typeof event.data.deadlineSteps === "number" ? event.data.deadlineSteps : undefined,
+            },
+          };
+        }
+      } else if (COMPACTION_HINT_TYPES.has(event.type)) {
         state = { ...state, compactionHint: true };
       } else if (event.type === "compaction/end") {
-        state = { ...state, compactionHint: false };
+        state = { ...state, compactionHint: false, openCompaction: null };
       }
 
       // 3. version slicing: a boundary CLOSES the current segment (its nodes
@@ -980,6 +1006,12 @@ window.__ModuleLoader__.load({
         h("span", { style: styles.badge }, versions.length + " versions"),
         state.pending
           ? h("span", { style: { ...styles.badge, color: "#d29922" } }, "edit txn in flight")
+          : null,
+        state.openCompaction
+          ? h("span", { style: { ...styles.badge, color: "#d29922" } },
+              "awaiting self-edit"
+              + (state.openCompaction.budgetTokens ? " · ≤ " + (state.openCompaction.budgetTokens >= 1000 ? Math.round(state.openCompaction.budgetTokens / 1000) + "K" : state.openCompaction.budgetTokens) + "t" : "")
+              + (state.openCompaction.deadlineSteps ? " · " + state.openCompaction.deadlineSteps + " steps" : ""))
           : null,
         state.uncertain
           ? h("span", { style: { ...styles.badge, color: "#f85149" } },
