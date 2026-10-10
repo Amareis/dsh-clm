@@ -81,6 +81,12 @@ export interface ClmCompactionConfig extends BasicCompactionConfig {
    *  `agent/request-error` listener and runs the standard retry flow;
    *  'off' disables. */
   overflowWording?: ClmOverflowWordingMode;
+  /** De-escalation (spec §6 item 4): after this many CONSECUTIVE self-edit
+   *  timeouts on a session, stop opening CLM transactions and use the
+   *  classic path for the rest of the session — a systematically
+   *  non-responding model must not pay the nudge→timeout→fallback cycle
+   *  every time. Defaults to 3; a successful close resets the counter. */
+  deescalateAfter?: number;
 }
 
 /** Validated immutable CLM config (the basic half lives in `this.config`). */
@@ -91,6 +97,7 @@ export interface ResolvedClmConfig {
   readonly fallback: ClmFallbackMode;
   readonly manual: ClmManualMode;
   readonly overflowWording: ClmOverflowWordingMode;
+  readonly deescalateAfter: number;
 }
 
 const CLM_CONFIG_KEYS = [
@@ -100,6 +107,7 @@ const CLM_CONFIG_KEYS = [
   "fallback",
   "manual",
   "overflowWording",
+  "deescalateAfter",
 ] as const;
 
 const FALLBACK_MODES: readonly ClmFallbackMode[] = ["basic", "fail", "off"];
@@ -143,6 +151,8 @@ export function resolveClmConfig(config: ClmCompactionConfig = {}): ResolvedClmC
       `ClmCompactionConfig.overflowWording must be one of ${OVERFLOW_WORDING_MODES.join(" | ")}, got ${String(overflowWording)}`,
     );
   }
+  const deescalateAfter = config.deescalateAfter ?? 3;
+  assertPositiveInteger("ClmCompactionConfig.deescalateAfter", deescalateAfter);
   return Object.freeze({
     maxWaitSteps,
     overflowMaxWaitSteps,
@@ -150,6 +160,7 @@ export function resolveClmConfig(config: ClmCompactionConfig = {}): ResolvedClmC
     fallback,
     manual,
     overflowWording,
+    deescalateAfter,
   });
 }
 
@@ -268,6 +279,10 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
   /** Retry counter for the overflow-wording shim (per agent). */
   private readonly shimOverflowRetries = new WeakMap<object, number>();
 
+  /** Consecutive self-edit timeouts per session (spec §6 item 4); at
+   *  `deescalateAfter` the session drops to the classic path for good. */
+  private readonly consecutiveTimeouts = new WeakMap<Session, number>();
+
   constructor(ctx: HarnessContext, config: ClmCompactionConfig = {}) {
     super(ctx, basicConfigOf(config));
     this.clm = resolveClmConfig(config);
@@ -359,6 +374,11 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
           turn: pending.turn,
           error: errorText,
         });
+        // De-escalation bookkeeping (spec §6 item 4): only the automatic
+        // path counts — a compactRegion caller explicitly asked for CLM.
+        if (pending.origin === "auto") {
+          this.consecutiveTimeouts.set(session, (this.consecutiveTimeouts.get(session) ?? 0) + 1);
+        }
         if (pending.origin === "region") {
           return await this.settleRegionFallback(agent, pending, signal, errorText);
         }
@@ -377,6 +397,10 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
     // Phase 1: basic's gate, copied (threshold → prune → span selection).
     const target = routedTarget(session);
     if (target === undefined) return null;
+    // De-escalated sessions skip the CLM path entirely (spec §6 item 4).
+    if ((this.consecutiveTimeouts.get(session) ?? 0) >= this.clm.deescalateAfter) {
+      return super.compactIfNeeded(agent, trigger, signal);
+    }
     const policy = resolveTargetPolicy(this.config, target);
     const prune = (this.ctx as unknown as { get(name: string): { pruneSession(s: Session): void } | undefined }).get("toolResultPruner");
     let measurement = this.measure(session);
@@ -555,6 +579,8 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       shadowedTokenCount: pending.baselineTokens,
     } as unknown as CompactionResultT;
     pending.waiter?.resolve(result);
+    // A successful close resets the de-escalation counter (spec §6 item 4).
+    this.consecutiveTimeouts.delete(session);
     return result;
   }
 

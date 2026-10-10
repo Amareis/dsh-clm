@@ -10,6 +10,7 @@ describe("resolveClmConfig", () => {
       fallback: "basic",
       manual: "basic",
       overflowWording: "shim",
+      deescalateAfter: 3,
     });
   });
 
@@ -21,6 +22,7 @@ describe("resolveClmConfig", () => {
       fallback: "off",
       manual: "reject",
       overflowWording: "off",
+      deescalateAfter: 5,
     })).toEqual({
       maxWaitSteps: 5,
       overflowMaxWaitSteps: 2,
@@ -28,6 +30,7 @@ describe("resolveClmConfig", () => {
       fallback: "off",
       manual: "reject",
       overflowWording: "off",
+      deescalateAfter: 5,
     });
   });
 

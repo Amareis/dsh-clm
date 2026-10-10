@@ -694,7 +694,10 @@ independently (the engine without the tool will always fall back on timeout).
    span, every "nudge → timeout → fallback" cycle costs extra steps and
    tokens. A per-session failure counter and de-escalation are needed: after
    K consecutive timeouts — only the basic path until the end of the session
-   (analogous to `warnedPressureConfigTargets`).
+   (analogous to `warnedPressureConfigTargets`). **Shipped 2026-10-10**:
+   `deescalateAfter` (default 3) counts CONSECUTIVE automatic-path timeouts
+   per session; at the limit the engine delegates straight to
+   `super.compactIfNeeded`, and a successful close resets the counter.
 5. **Self-checkpoint quality vs classic-summary.** A CLM checkpoint is
    written by the model "about itself" in its working context — expected to
    be better on relevance (it knows what it will need) but worse on

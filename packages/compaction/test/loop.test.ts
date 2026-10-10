@@ -387,3 +387,39 @@ describe("compactRegion (spec §4.7)", () => {
     ).rejects.toThrow(/already open/);
   });
 });
+
+describe("de-escalation after consecutive timeouts (spec §6 item 4)", () => {
+  it("drops to the classic path after deescalateAfter consecutive timeouts and recovers on a close", async () => {
+    const session = longSession();
+    const { engine } = makeEngine({ maxWaitSteps: 1, deescalateAfter: 2 });
+    // Track classic-path delegations by stubbing the BASE class method.
+    let classicCalls = 0;
+    const parent = Object.getPrototypeOf(Object.getPrototypeOf(engine));
+    const original = parent.compactIfNeeded;
+    parent.compactIfNeeded = async function (...args: unknown[]) {
+      classicCalls += 1;
+      return null; // do not actually summarize in this test
+    };
+    try {
+      // Timeout #1: open + wait + timeout.
+      await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
+      expect(events(session, "compaction/start")).toHaveLength(1);
+      await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
+      await engine.compactIfNeeded(agent(session), "pressure", SIGNAL); // timeout #1
+      expect(events(session, "compaction/end")).toHaveLength(1);
+      // Not yet de-escalated: a new CLM transaction opens (timeout #2 cycle).
+      await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
+      expect(events(session, "compaction/start")).toHaveLength(2);
+      await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
+      await engine.compactIfNeeded(agent(session), "pressure", SIGNAL); // timeout #2
+      expect(events(session, "compaction/end")).toHaveLength(2);
+      // De-escalated: the next pre-step goes straight to the classic path —
+      // no new CLM transaction.
+      await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
+      expect(events(session, "compaction/start")).toHaveLength(2);
+      expect(classicCalls).toBeGreaterThan(0);
+    } finally {
+      parent.compactIfNeeded = original;
+    }
+  });
+});
