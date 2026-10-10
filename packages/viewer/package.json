@@ -1,0 +1,23 @@
+{
+  "name": "@local/clm-context-viewer",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Context viewer tab: the model-visible context surface with version history sliced by context_edit edits and native compaction replaces. Pure client-side, event-sourced; host half is a placeholder. Spec: docs/context-viewer-tab.md.",
+  "exports": {
+    ".": "./dist/host.js",
+    "./client": "./dist/client.js"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-chat"
+      ]
+    }
+  }
+}

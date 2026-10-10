@@ -1,0 +1,12 @@
+{
+  "name": "@local/dsh-clm-preset",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The clm agent preset: GENERATED from the shipped cordis preset by scripts/gen-preset.mjs (cordis dev tooling + CLM compaction engine), never hand-copied. Regenerate after a dsh update: npm run gen:preset.",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

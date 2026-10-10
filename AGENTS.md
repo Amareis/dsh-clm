@@ -26,15 +26,34 @@ counter.
   monkey-patches builder methods onto it, so every test runs through the
   production append validator and surface derivation.
 - `docs/` — research background, engineering log (why the code is the way it
-  is), and the compaction-engine spec (next milestone).
+  is), the compaction-engine spec (Stages 2+), and the self-compaction
+  dogfooding log.
+- `packages/compaction/` — `@local/dsh-clm-compaction`, Stage-1 CLM
+  compaction engine. **Opposite import rule from the core**: it value-imports
+  the harness's OWN `@deepseek-ai/dsh-compaction{,-basic}` through symlinks
+  (`scripts/link-harness.mjs`, run by postinstall; set
+  `DSH_RUNTIME_NODE_MODULES` when the harness is not under `~/.npm/_npx`) so
+  class identity (`instanceof ManualCompactionError`) is preserved. Never
+  let npm install real copies of those two packages.
+- `packages/viewer/` — `@local/clm-context-viewer` (context viewer tab).
+  `src/client.ts` compiles as a SCRIPT (`module: none`, no imports — the
+  client loader serves it raw); ambient declarations stand in for
+  `require('react')` and the injected services.
+- `packages/preset/` — `@local/dsh-clm-preset`. `cordis.patch.yml` is
+  **generated** by `packages/preset/scripts/gen-preset.mjs` from the shipped
+  cordis preset — never edit it by hand; re-run `npm run gen:preset` after
+  a dsh update (`npm run check` fails when it is stale).
 
 ## Commands
 
 ```bash
 npm install
-npm run build    # tsc → dist/  (required after clone; dist/ is gitignored)
+npm run build    # tsc → dist/ for the plugin and packages/* (required after
+                 # clone; dist/ is gitignored)
 npm test         # vitest run
-npm run check    # tsc --noEmit
+npm run check    # tsc --noEmit everywhere + preset sync check
+npm run gen:preset  # re-derive the clm preset from the installed dsh
+npm run link-harness  # recreate the @deepseek-ai symlinks for packages/compaction
 ```
 
 ## Live development (HMR) — read this before touching a running harness

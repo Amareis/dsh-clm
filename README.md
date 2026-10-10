@@ -43,6 +43,26 @@ instead of waiting for the harness to compact it on a schedule.
    with nudge lines at 70/75/90%. Token counting via `ctx.tokenMeter`
    (fallback: chars/4).
 
+## Repository layout
+
+This repo is the CLM toolkit monorepo: the `context_edit` plugin at the root
+(package `@local/dsh-clm`) plus sibling packages under `packages/`:
+
+- `packages/compaction/` — `@local/dsh-clm-compaction`, the Stage-1 CLM
+  compaction engine: `ClmCompactionEngine extends BasicCompactionEngine`
+  (approach C, spec in [docs/compaction-engine.md](docs/compaction-engine.md)).
+  Behavior is identical to basic; the self-edit loop lands in Stage 2. The
+  package imports the harness's OWN modules through symlinks created by
+  `scripts/link-harness.mjs` (postinstall) so `instanceof` identity holds.
+- `packages/viewer/` — `@local/clm-context-viewer`, the context viewer tab
+  (spec in [docs/context-viewer-tab.md](docs/context-viewer-tab.md)): the
+  model-visible surface fold + version history, TypeScript port of the
+  original `clm-context-viewer` bundle.
+- `packages/preset/` — `@local/dsh-clm-preset`, the `clm` agent preset,
+  **generated** from the shipped cordis preset by
+  `packages/preset/scripts/gen-preset.mjs` (never hand-copied — re-run
+  `npm run gen:preset` after a dsh update; `npm run check` fails when stale).
+
 ## Architecture
 
 ```
@@ -76,16 +96,21 @@ The session contract mirrors `lib/types/session.d.ts`:
 ## Development
 
 ```bash
-npm install        # dev-only deps: typescript, vitest, @deepseek-ai type packages
-npm run build      # tsc → dist/ (NodeNext, strict, declarations + sourcemaps)
-npm test           # vitest: 51 tests, ALL driving real detached dsh-session
+npm install        # dev-only deps + postinstall symlinks to the harness's
+                   # own @deepseek-ai packages (scripts/link-harness.mjs)
+npm run build      # tsc → dist/ for the plugin AND packages/*
+npm test           # vitest: 60 tests, ALL driving real detached dsh-session
                    # Sessions (Session.create + production validation) — no
                    # fakes; test/helpers.ts patches builders onto real Sessions
-npm run check      # typechecks src/ AND test/
+npm run check      # typechecks src/, test/, packages/* + preset sync check
+npm run gen:preset # re-derive packages/preset/cordis.patch.yml from the
+                   # installed dsh-web-app preset (after a dsh update)
 ```
 
 `dist/` is gitignored — run `npm run build` after cloning before installing
-the plugin into a profile.
+the plugin into a profile. If `@deepseek-ai/dsh-compaction-basic` fails to
+resolve, the harness symlinks are missing: `npm run link-harness` (set
+`DSH_RUNTIME_NODE_MODULES` when the harness is not under `~/.npm/_npx`).
 
 For live development against a running harness, see the **HMR section in
 [AGENTS.md](AGENTS.md)** — plugin toggles do not reload code (Node ESM module
@@ -131,15 +156,16 @@ composition.
 ## Roadmap
 
 1. **`dsh-clm-compaction` engine** (approach C) — staged plan in
-   [docs/compaction-engine.md](docs/compaction-engine.md) §0: Stage 0 CLM
-   preset port → Stage 1 engine skeleton on the basic path → Stage 2 the
-   three-phase self-edit loop (the core piece) → Stage 3 contract edges →
-   Stage 4 hardening and A/B evaluation.
+   [docs/compaction-engine.md](docs/compaction-engine.md) §0: ~~Stage 0 CLM
+   preset port~~ (generated, `packages/preset`) → ~~Stage 1 engine skeleton
+   on the basic path~~ (`packages/compaction`) → Stage 2 the three-phase
+   self-edit loop (the core piece) → Stage 3 contract edges → Stage 4
+   hardening and A/B evaluation.
 2. **Context viewer tab** — GUI tab with the model-visible context and
    per-edit version history; spec in
-   [docs/context-viewer-tab.md](docs/context-viewer-tab.md). Skeleton tab is
-   live (`@local/clm-context-viewer`): realtime last-10 chat nodes; the
-   surface fold + version slicing come next.
+   [docs/context-viewer-tab.md](docs/context-viewer-tab.md). The full fold +
+   version slicing is live (`packages/viewer`, TypeScript); diff mode and
+   the host parity-check are follow-ups.
 3. Host-side pre-step hook: fold a completed `context_edit` pair on the next
    host step instead of waiting for the model's next edit.
 4. GUI: filter dropped (empty) nodes from the session trajectory view.

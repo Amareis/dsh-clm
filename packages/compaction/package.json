@@ -1,0 +1,15 @@
+{
+  "name": "@local/dsh-clm-compaction",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "CLM compaction engine (approach C). Stage 1: ClmCompactionEngine extends the harness's own BasicCompactionEngine; the full CLM config surface is parsed but the CLM loop is inactive, so behavior is identical to basic. See docs/compaction-engine.md §0.",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

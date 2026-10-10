@@ -6,17 +6,14 @@ A third conversation tab (next to Chat and Trajectory) that shows the context
 
 ## Status
 
-**Skeleton live** (bundle `@local/clm-context-viewer`, directory
-`clm-context-viewer/` in the dogfooding workspace): host half is empty, the
-client module registers a React component into the `conversation.view` slot
-(`id: 'clm-context'`, order 20, label "Context") and renders the last 10 chat
-nodes via the standard `useChat` view prop. Installed with
-`plugin_manager install_bundle`; the tab appeared and updates in realtime
-without a page refresh (dev:web + the live clientModules graph).
-
-Skeleton caveat: `useChat` is the **transcript** view — shadowed (replaced)
-content stays visible, so this is not yet the model-surface view. Next
-iteration replaces the data source with the surface fold below.
+**Live, TypeScript port** (`packages/viewer` in this repo; bundle
+`@local/clm-context-viewer`). The full surface fold + version slicing +
+detail panels are implemented in `src/client.ts` (compiled as a script
+module — no imports — so the host clientModules service serves it raw).
+Originally developed as the standalone `clm-context-viewer/` bundle (plain
+JS); moved into this monorepo and ported to TS with the fold domain model
+typed. Installed with `plugin_manager install_bundle`; the tab updates in
+realtime without a page refresh (dev:web + the live clientModules graph).
 
 Environment gotcha worth keeping: `install_bundle` shells out to `pnpm` from
 PATH; when the harness session's PATH is shadowed by a source checkout

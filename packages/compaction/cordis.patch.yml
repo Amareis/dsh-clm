@@ -1,0 +1,7 @@
+# The engine is mounted exclusively by the preset composition
+# (@local/dsh-clm-preset → preset-clm → compaction group), never at the host
+# root: a root-level engine with `auto: true` would register a second pair of
+# agent/pre-step + agent/request-error listeners and double-fire against the
+# preset-group engine. This bundle therefore ships an empty patch — it exists
+# so the Loader can resolve the package name from the profile.
+[]

@@ -1,0 +1,6 @@
+# Registers the viewer's host half (a placeholder; the Client module owns the
+# rendering). The dsh.client manifest in package.json makes the host
+# clientModules service discover and serve dist/client.js.
+- insert:
+    - id: clm-context-viewer
+      name: '@local/clm-context-viewer'

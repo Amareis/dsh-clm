@@ -1,7 +1,22 @@
 # Design: `dsh-clm-compaction` — a CLM condensation engine for DSH
 
-> **Status: not implemented — design stage.** This document is a future-work
-> specification for the engineer/agent who will build the engine. Approach A —
+> **Status: Stage 1 implemented** (`packages/compaction`). Stage 0 (the CLM
+> preset) is done as a GENERATED declaration (`packages/preset`, see §0).
+> Stage 1 ships `ClmCompactionEngine extends BasicCompactionEngine` with the
+> full config surface parsed (`maxWaitSteps`, `overflowMaxWaitSteps`,
+> `targetReductionRatio`, `fallback`, `manual`), `manual: 'reject'` honored,
+> and behavior otherwise identical to basic. Stage 2 (the three-phase
+> self-edit loop, §4.2) is the next milestone.
+>
+> **Module identity (§5.3 resolved as "real package"):** the engine imports
+> the harness's OWN `@deepseek-ai/dsh-compaction{,-basic}` through symlinks
+> (`scripts/link-harness.mjs`, wired into postinstall) — Node resolves them
+> by realpath into the harness installation, so there is exactly one class
+> object and `error instanceof ManualCompactionError` in `dsh-command-compact`
+> keeps working. Verified live: engine construction, service registration as
+> `ctx.compaction`, and the instanceof check all pass.
+>
+> This document remains the reference design for Stages 2–4. Approach A —
 > the `context_edit` context self-editing tool (the `dsh-clm` plugin in this
 > repo) — is already implemented; this document describes **approach C**, a
 > native CLM compaction engine implementing DSH's `dsh-compaction` contract.
