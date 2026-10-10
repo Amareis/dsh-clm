@@ -702,4 +702,11 @@ independently (the engine without the tool will always fall back on timeout).
    `agent/request-error` overflow-recovery listener never fires — **even
    `dsh-compaction-basic` has no recovery on this route**. Harness-level
    fix: extend the regex family with `request exceeded … model token
-   limit`. Until then, the CLM engine inherits the gap.
+   limit`. **Engine-side shim shipped 2026-10-10** (`overflowWording:
+   'shim' | 'off'`, default 'shim'): the CLM engine registers an inner
+   `agent/request-error` listener that recognizes the missed wording and
+   runs the standard growth-gated retry flow through its own
+   `compactIfNeeded`; already-classified failures pass through to basic.
+   Every stock pattern requires the literal word "context", which Kimi
+   never says — the shim pattern matches `request exceeded … model token
+   limit` instead.

@@ -14,7 +14,8 @@ const WINDOW = 1000;
 
 interface FakeCtx {
   reflect: { provide(): void };
-  on(): void;
+  on(event: string, listener: (...args: never[]) => unknown): void;
+  listeners: Map<string, Array<(...args: never[]) => unknown>>;
   get(): undefined;
   waterfall(event: unknown, payload: unknown, next: () => unknown): unknown;
   logger: { info(): void; warn(): void };
@@ -24,9 +25,15 @@ interface FakeCtx {
 }
 
 function fakeCtx(): FakeCtx {
+  const listeners = new Map<string, Array<(...args: never[]) => unknown>>();
   return {
     reflect: { provide() {} },
-    on() {},
+    on(event, listener) {
+      const list = listeners.get(event) ?? [];
+      list.push(listener);
+      listeners.set(event, list);
+    },
+    listeners,
     get() { return undefined; },
     waterfall(_event, _payload, next) { return next(); },
     logger: { info() {}, warn() {} },
@@ -105,8 +112,9 @@ function events(session: Session, type: string): Array<{ seq: number; data: any 
   return out;
 }
 
-function makeEngine(config: Record<string, unknown> = {}): ClmCompactionEngine {
-  return new ClmCompactionEngine(fakeCtx() as never, {
+function makeEngine(config: Record<string, unknown> = {}): { engine: ClmCompactionEngine; ctx: FakeCtx } {
+  const ctx = fakeCtx();
+  const engine = new ClmCompactionEngine(ctx as never, {
     thresholdRatio: 0.5,
     retainRatio: 0.1,
     headroomTokens: 10,
@@ -116,6 +124,7 @@ function makeEngine(config: Record<string, unknown> = {}): ClmCompactionEngine {
     fallback: "off",
     ...config,
   });
+  return { engine, ctx };
 }
 
 const agent = (session: Session) => ({ session, options: {} }) as never;
@@ -127,7 +136,7 @@ describe("ClmCompactionEngine three-phase loop", () => {
     addHeader(session);
     addSystem(session, "sys");
     addUser(session, "a");
-    const engine = makeEngine();
+    const { engine } = makeEngine();
     const result = await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
     expect(result).toBeNull();
     expect(events(session, "compaction/start")).toHaveLength(0);
@@ -135,7 +144,7 @@ describe("ClmCompactionEngine three-phase loop", () => {
 
   it("opens a transaction with a nudge instead of summarizing (phase 1)", async () => {
     const session = longSession();
-    const engine = makeEngine();
+    const { engine } = makeEngine();
     const result = await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
     expect(result).toBeNull();
     const starts = events(session, "compaction/start");
@@ -159,7 +168,7 @@ describe("ClmCompactionEngine three-phase loop", () => {
 
   it("waits while no checkpoint has landed (phase 2), then closes on a sufficient checkpoint (phase 3)", async () => {
     const session = longSession();
-    const engine = makeEngine({ maxWaitSteps: 2 });
+    const { engine } = makeEngine({ maxWaitSteps: 2 });
     await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
     const compactionId = events(session, "compaction/start")[0]!.data.compactionId as string;
 
@@ -196,7 +205,7 @@ describe("ClmCompactionEngine three-phase loop", () => {
 
   it("times out with compaction/end{error} and fallback 'off' → null", async () => {
     const session = longSession();
-    const engine = makeEngine({ maxWaitSteps: 1 });
+    const { engine } = makeEngine({ maxWaitSteps: 1 });
     await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
     await engine.compactIfNeeded(agent(session), "pressure", SIGNAL); // waited 1
     const result = await engine.compactIfNeeded(agent(session), "pressure", SIGNAL); // waited 2 > 1
@@ -208,7 +217,7 @@ describe("ClmCompactionEngine three-phase loop", () => {
 
   it("fallback 'fail' surfaces the timeout as an error", async () => {
     const session = longSession();
-    const engine = makeEngine({ maxWaitSteps: 1, fallback: "fail" });
+    const { engine } = makeEngine({ maxWaitSteps: 1, fallback: "fail" });
     await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
     await engine.compactIfNeeded(agent(session), "pressure", SIGNAL); // waited 1
     await expect(engine.compactIfNeeded(agent(session), "pressure", SIGNAL)).rejects.toThrow(/self-edit transaction failed/);
@@ -221,7 +230,7 @@ describe("ClmCompactionEngine three-phase loop", () => {
     addSystem(session, "sys");
     addUser(session, "a");
     addUser(session, "b"); // 3 nodes = 300t < 500t threshold
-    const engine = makeEngine();
+    const { engine } = makeEngine();
     expect(await engine.compactIfNeeded(agent(session), "pressure", SIGNAL)).toBeNull();
     expect(events(session, "compaction/start")).toHaveLength(0);
     // Overflow ignores the threshold and opens the transaction.
@@ -230,5 +239,81 @@ describe("ClmCompactionEngine three-phase loop", () => {
     expect(starts).toHaveLength(1);
     const nudges = events(session, "clm/compaction-nudge");
     expect(nudges[0]!.data.deadlineSteps).toBe(1); // overflowMaxWaitSteps
+  });
+});
+
+describe("overflow-wording shim (spec §6 item 9)", () => {
+  const KIMI_MESSAGE = "Your request exceeded k3-256k model token limit: 262144";
+
+  function requestErrorListener(ctx: FakeCtx): (event: unknown, next: () => unknown) => unknown {
+    const list = ctx.listeners.get("agent/request-error") ?? [];
+    if (list.length !== 1) throw new Error(`expected exactly 1 shim listener, got ${list.length}`);
+    return list[0] as (event: unknown, next: () => unknown) => unknown;
+  }
+
+  function failureEvent(session: Session, failure: { code?: string; message?: string }) {
+    return { agent: { session, options: {} }, failure, signal: new AbortController().signal };
+  }
+
+  it("recognizes Kimi's unclassified overflow wording and runs the CLM overflow path", async () => {
+    const session = longSession();
+    const { engine: _engine, ctx } = makeEngine({ maxOverflowRetries: 1 });
+    const listener = requestErrorListener(ctx);
+    let nextCalls = 0;
+    const next = () => { nextCalls += 1; return "passthrough"; };
+    const result = await listener(failureEvent(session, { code: "INVALID_REQUEST", message: KIMI_MESSAGE }), next);
+    // The CLM overflow path opened a self-edit transaction (no growth yet),
+    // so the original error passes through — the nudge drives the next turn.
+    expect(result).toBe("passthrough");
+    expect(nextCalls).toBe(1);
+    expect(events(session, "compaction/start")).toHaveLength(1);
+    const nudges = events(session, "clm/compaction-nudge");
+    expect(nudges).toHaveLength(1);
+    expect(nudges[0]!.data.deadlineSteps).toBe(1); // overflowMaxWaitSteps
+  });
+
+  it("returns { kind: 'retry' } when compaction produced surface growth, and stops at maxOverflowRetries", async () => {
+    const session = longSession();
+    const { engine, ctx } = makeEngine({ maxOverflowRetries: 1 });
+    const listener = requestErrorListener(ctx);
+    // Force the classic shape: compactIfNeeded that grows replaceGeneration
+    // (an additive append does NOT — only a surface replace counts).
+    engine.compactIfNeeded = (async () => {
+      const seq = (session.surface.nodes as unknown as number[])[1]!;
+      append(session, "user/message", {
+        id: mid(), role: "user", content: [{ type: "text", text: "compacted" }], source: { kind: "user" },
+      }, { surfaceOp: { op: "replace", startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] });
+      return null;
+    }) as never;
+    let nextCalls = 0;
+    const next = () => { nextCalls += 1; return "passthrough"; };
+    // The retry counter is keyed by the agent INSTANCE — the runtime reuses
+    // it across requests, so the test must too.
+    const agentCtx = { session, options: {} };
+    const event = () => ({ agent: agentCtx, failure: { code: "INVALID_REQUEST", message: KIMI_MESSAGE }, signal: new AbortController().signal });
+    const first = await listener(event(), next);
+    expect(first).toEqual({ kind: "retry" });
+    expect(nextCalls).toBe(0);
+    // Retry budget exhausted → the original error passes through.
+    const second = await listener(event(), next);
+    expect(second).toBe("passthrough");
+    expect(nextCalls).toBe(1);
+  });
+
+  it("ignores already-classified overflow and unrelated failures", async () => {
+    const session = longSession();
+    const { ctx } = makeEngine({ maxOverflowRetries: 1 });
+    const listener = requestErrorListener(ctx);
+    let nextCalls = 0;
+    const next = () => { nextCalls += 1; return "passthrough"; };
+    await listener(failureEvent(session, { code: "CONTEXT_WINDOW_EXCEEDED", message: "context length exceeded" }), next);
+    await listener(failureEvent(session, { code: "INVALID_CREDENTIAL", message: "bad key" }), next);
+    expect(nextCalls).toBe(2);
+    expect(events(session, "compaction/start")).toHaveLength(0);
+  });
+
+  it("'off' disables the shim (no listeners registered)", () => {
+    const { ctx } = makeEngine({ overflowWording: "off" });
+    expect(ctx.listeners.get("agent/request-error") ?? []).toHaveLength(0);
   });
 });

@@ -55,6 +55,8 @@ type CompactionResultT = Awaited<ReturnType<BasicCompactionEngine["compactIfNeed
 export type ClmFallbackMode = "basic" | "fail" | "off";
 /** Behavior of manual `/compact` on an idle agent. */
 export type ClmManualMode = "basic" | "reject";
+/** Recovery for provider overflow wordings dsh-llm does not classify. */
+export type ClmOverflowWordingMode = "shim" | "off";
 
 /** Full CLM engine configuration: every basic field plus the CLM surface. */
 export interface ClmCompactionConfig extends BasicCompactionConfig {
@@ -71,6 +73,14 @@ export interface ClmCompactionConfig extends BasicCompactionConfig {
   fallback?: ClmFallbackMode;
   /** Manual `/compact`: classic summary ('basic', default) or reject. */
   manual?: ClmManualMode;
+  /** Recovery shim for provider overflow wordings that
+   *  `isContextWindowExceededError` misses — e.g. Kimi's "Your request
+   *  exceeded k3-256k model token limit: 262144" (compaction-engine.md §6
+   *  item 9: without it, overflow recovery is dead on that route even for
+   *  basic). 'shim' (default) recognizes the wording in an
+   *  `agent/request-error` listener and runs the standard retry flow;
+   *  'off' disables. */
+  overflowWording?: ClmOverflowWordingMode;
 }
 
 /** Validated immutable CLM config (the basic half lives in `this.config`). */
@@ -80,6 +90,7 @@ export interface ResolvedClmConfig {
   readonly targetReductionRatio: number;
   readonly fallback: ClmFallbackMode;
   readonly manual: ClmManualMode;
+  readonly overflowWording: ClmOverflowWordingMode;
 }
 
 const CLM_CONFIG_KEYS = [
@@ -88,10 +99,12 @@ const CLM_CONFIG_KEYS = [
   "targetReductionRatio",
   "fallback",
   "manual",
+  "overflowWording",
 ] as const;
 
 const FALLBACK_MODES: readonly ClmFallbackMode[] = ["basic", "fail", "off"];
 const MANUAL_MODES: readonly ClmManualMode[] = ["basic", "reject"];
+const OVERFLOW_WORDING_MODES: readonly ClmOverflowWordingMode[] = ["shim", "off"];
 
 function assertPositiveInteger(label: string, value: number): void {
   if (!Number.isInteger(value) || value < 1) {
@@ -124,12 +137,19 @@ export function resolveClmConfig(config: ClmCompactionConfig = {}): ResolvedClmC
       `ClmCompactionConfig.manual must be one of ${MANUAL_MODES.join(" | ")}, got ${String(manual)}`,
     );
   }
+  const overflowWording = config.overflowWording ?? "shim";
+  if (!OVERFLOW_WORDING_MODES.includes(overflowWording)) {
+    throw new Error(
+      `ClmCompactionConfig.overflowWording must be one of ${OVERFLOW_WORDING_MODES.join(" | ")}, got ${String(overflowWording)}`,
+    );
+  }
   return Object.freeze({
     maxWaitSteps,
     overflowMaxWaitSteps,
     targetReductionRatio,
     fallback,
     manual,
+    overflowWording,
   });
 }
 
@@ -194,6 +214,31 @@ function nodePreview(session: Session, seq: SessionSeq): string {
   }
 }
 
+/** Overflow wordings that dsh-llm's `isContextWindowExceededError` misses
+ *  (compaction-engine.md §6 item 9). Kimi's measured wording:
+ *  "Your request exceeded k3-256k model token limit: 262144" — every stock
+ *  pattern requires the literal word "context", which Kimi never says. */
+const UNCLASSIFIED_OVERFLOW_PATTERNS: readonly RegExp[] = [
+  /\b(?:request|prompt|input)\b.{0,40}\bexceed(?:ed|s)?\b.{0,40}\b(?:[\w.-]+\s+)?model\s+token\s+limit\b/i,
+];
+
+/** The literal value of dsh-llm's CONTEXT_WINDOW_EXCEEDED_CODE (the package
+ *  is not linkable from here; the code string is stable API). */
+const CONTEXT_WINDOW_EXCEEDED_CODE = "CONTEXT_WINDOW_EXCEEDED";
+
+/** Loose shape of the agent/request-error event payload the shim consumes. */
+interface RequestErrorEvent {
+  readonly agent: { readonly session: Session; readonly options: Record<string, unknown> };
+  readonly failure: { readonly code?: string; readonly message?: string };
+  readonly signal: AbortSignal;
+}
+
+/** Loose ctx view for listener registration (cordis Context at runtime). */
+interface ListenerCtx {
+  on(event: string, listener: (event: never, next: () => unknown) => unknown): void;
+  logger: { info(message: string): void; warn(message: string): void };
+}
+
 /**
  * CLM compaction backend. Stage 2: the three-phase self-edit loop
  * (nudge → `context_edit(compaction: …)` checkpoints → close/fallback) inside
@@ -211,9 +256,63 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
   /** Open self-edit transactions, one per session. */
   private readonly pending = new WeakMap<Session, PendingClm>();
 
+  /** Retry counter for the overflow-wording shim (per agent). */
+  private readonly shimOverflowRetries = new WeakMap<object, number>();
+
   constructor(ctx: HarnessContext, config: ClmCompactionConfig = {}) {
     super(ctx, basicConfigOf(config));
     this.clm = resolveClmConfig(config);
+    if (this.clm.overflowWording === "shim") this.registerOverflowWordingShim();
+  }
+
+  /**
+   * Overflow-wording shim (spec §6 item 9): when the provider's overflow
+   * wording escapes dsh-llm's classifier, basic's `agent/request-error`
+   * listener never fires and the session dies at the wall. This listener
+   * (registered AFTER basic's, i.e. inner) recognizes the missed wordings
+   * and runs the same growth-gated retry flow through OUR compactIfNeeded,
+   * so the CLM overflow protocol (nudge with the tighter deadline, then
+   * fallback) applies. Already-classified failures pass through untouched.
+   */
+  private registerOverflowWordingShim(): void {
+    const ctx = this.ctx as unknown as ListenerCtx;
+    ctx.on("agent/status", (({ agent, status }: { agent: object; status: string }) => {
+      if (status === "idle") this.shimOverflowRetries.delete(agent);
+    }) as never);
+    ctx.on("agent/request-error", (async (event: RequestErrorEvent, next: () => unknown) => {
+      const { agent, failure, signal } = event;
+      if (signal.aborted) return next();
+      if (failure.code === CONTEXT_WINDOW_EXCEEDED_CODE) return next();
+      const detail = `${failure.code ?? ""} ${failure.message ?? ""}`;
+      if (!UNCLASSIFIED_OVERFLOW_PATTERNS.some((pattern) => pattern.test(detail))) return next();
+      const session = agent.session;
+      const target = routedTarget(session);
+      const maxRetries = target === undefined
+        ? (this.config.maxOverflowRetries ?? 1)
+        : resolveTargetPolicy(this.config, target).maxOverflowRetries;
+      const retries = this.shimOverflowRetries.get(agent) ?? 0;
+      if (retries >= maxRetries) return next();
+      const generation = session.surface.replaceGeneration;
+      let result;
+      try {
+        result = await this.compactIfNeeded(agent as unknown as Agent, "context-overflow", signal);
+      } catch (recoveryError) {
+        const message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+        if (!signal.aborted && session.surface.replaceGeneration > generation) {
+          ctx.logger.warn(`context-overflow wording shim: compaction failed after durable surface progress: ${message}; retrying from the replacement surface`);
+          this.shimOverflowRetries.set(agent, retries + 1);
+          return { kind: "retry" };
+        }
+        ctx.logger.warn(`context-overflow wording shim: compaction failed: ${message}; preserving the original request error`);
+        return next();
+      }
+      if (signal.aborted || session.surface.replaceGeneration <= generation) return next();
+      if (result !== null) {
+        ctx.logger.info(`context-overflow wording shim: shadowed ${result.shadowedSeqs.length} surface nodes (~${result.shadowedTokenCount} tokens)`);
+      }
+      this.shimOverflowRetries.set(agent, retries + 1);
+      return { kind: "retry" };
+    }) as never);
   }
 
   /** The token meter, narrowed to the measurement shape the gate consumes. */

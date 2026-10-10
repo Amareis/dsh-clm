@@ -9,6 +9,7 @@ describe("resolveClmConfig", () => {
       targetReductionRatio: 0.5,
       fallback: "basic",
       manual: "basic",
+      overflowWording: "shim",
     });
   });
 
@@ -19,12 +20,14 @@ describe("resolveClmConfig", () => {
       targetReductionRatio: 0.4,
       fallback: "off",
       manual: "reject",
+      overflowWording: "off",
     })).toEqual({
       maxWaitSteps: 5,
       overflowMaxWaitSteps: 2,
       targetReductionRatio: 0.4,
       fallback: "off",
       manual: "reject",
+      overflowWording: "off",
     });
   });
 
