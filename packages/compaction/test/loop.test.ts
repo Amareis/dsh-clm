@@ -423,3 +423,29 @@ describe("de-escalation after consecutive timeouts (spec §6 item 4)", () => {
     }
   });
 });
+
+describe("nudge vs concurrent surface mutation (spec §6 item 3)", () => {
+  it("closes cleanly when unrelated replaces land between the markers", async () => {
+    const session = longSession();
+    const { engine } = makeEngine({ maxWaitSteps: 2 });
+    await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
+    const compactionId = events(session, "compaction/start")[0]!.data.compactionId as string;
+    const surface = session.surface.nodes as unknown as number[];
+
+    // Concurrent mutation OUTSIDE the span (step-recovery style): replace
+    // the last user node (index 9) — the span is nodes 1..8.
+    const outsideSeq = surface[9]!;
+    append(session, "user/message", {
+      id: mid(), role: "user", content: [{ type: "text", text: "recovered step" }], source: { kind: "user" },
+    }, { surfaceOp: { op: "replace", startSeq: outsideSeq, endSeq: outsideSeq }, sourceEventSeqs: [outsideSeq] });
+
+    // The model's checkpoint over the span still closes the transaction.
+    const startSeq = surface[1]!;
+    const endSeq = surface[8]!;
+    commitCheckpoint(session, compactionId, startSeq, endSeq, surface.slice(1, 9), "[checkpoint after race]");
+    const closed = await engine.compactIfNeeded(agent(session), "pressure", SIGNAL);
+    expect(closed).not.toBeNull();
+    expect(closed!.compactionId).toBe(compactionId);
+    expect(events(session, "compaction/end")[0]!.data.error).toBeUndefined();
+  });
+});
