@@ -2,28 +2,45 @@
 # Boot: dsh --profile headless --patch <this file> -- <task>
 #
 # What it does to the headless composition:
-#   1. Disables compaction-basic's AUTO listeners (auto: false) — the entry
-#      itself stays so mount-order consumers of ctx.compaction still resolve
-#      at mount time; the CLM engine appended below re-registers the service.
-#      (Patch rows cannot rename an entry — name is a match guard — and plain
-#      inserts append at the end, after command-compact; hence this dance.)
+#   1. Disables compaction-basic entirely: cordis service registration is
+#      EXCLUSIVE (verified live: with basic merely auto:false, the CLM
+#      engine's ctx.set('compaction') threw "service has been registered"
+#      and the entry did not activate). Patch rows cannot rename an entry
+#      and plain inserts append at the end, so the engine goes in last.
+#      Side effect: command-compact (the only 'compaction' inject,
+#      consumed lazily per /compact invoke but checked at mount) does not
+#      activate in this throwaway profile — irrelevant for the dogfood,
+#      which exercises the automatic pressure path. In production the
+#      preset mounts the engine INSIDE the compaction group before
+#      command-compact, so this ordering dance is headless-only.
 #   2. Appends @local/dsh-clm-compaction with a tiny thresholdRatio so the
 #      three-phase loop fires after ~21K tokens instead of ~160K (the
 #      protocol is size-independent; this keeps the dogfood cheap). Its
 #      constructor registers the pre-step/request-error listeners (auto
-#      defaults to true) and wins the ctx.compaction registration.
+#      defaults to true) and the compaction service.
 #   3. Appends the dsh-clm host plugin (context_edit with the `compaction`
 #      checkpoint parameter).
 #   4. Routes the run at kimi-coding/k3-256k; the API key resolves from
-#      KIMI_CODING_API_KEY in the LAUNCHING environment.
+#      KIMI_CODING_API_KEY in the LAUNCHING environment OR from the
+#      credentials store (a key saved via the web Models page works too —
+#      verified: the mount smoke test completed a full LLM round-trip
+#      without the env var).
 #
 # Requires: @local/{dsh-clm,dsh-clm-compaction} symlinks under
 # ~/.dsh/profiles/headless/node_modules/@local/ (scripts/dogfood-headless.sh
 # creates them).
 
 - id: compaction-basic
-  config:
-    auto: false
+  disabled: true
+
+# The pruners middle-truncate large tool results (~13K tokens each), which
+# kept the surface UNDER the dogfood threshold on the first run (only
+# compaction/prune events fired — no transaction). The CLM preset disables
+# them for the same reason (they also mangle context_edit map dumps).
+- id: tool-result-pruner
+  disabled: true
+- id: image-offload
+  disabled: true
 
 - insert:
     - id: clm-compaction

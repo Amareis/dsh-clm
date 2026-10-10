@@ -72,10 +72,12 @@ Implementation notes (deviations from the sketch, all within the design):
   double-compact).
 - The nudge addresses the span by MAP NODE POSITIONS + first/last node
   previews (the engine cannot know `context_edit` unit numbers — the map
-  projection lives in the plugin). `Session.append` accepts the custom
-  `clm/compaction-nudge` event type (verified against the real validator);
-  the plugin reads the budget back from it — engine↔tool coupling stays
-  log-only.
+  projection lives in the plugin). The nudge is a `user/message` whose
+  `source` carries the transaction parameters; the plugin reads the budget
+  back from it — engine↔tool coupling stays log-only. (The earlier
+  log-only `clm/compaction-nudge` event type was dropped: unknown event
+  types cannot be marked `ignorable` through `Session.append`, so they
+  break session resume — see the §4.2 deviation note.)
 - Re-nudge only on visible progress (the coverage price decreased), never
   under the overflow trigger (every extra node hurts there — §6.6).
 - `compactRegion` is NOT overridden yet (Stage 3); the inherited basic
@@ -397,6 +399,43 @@ marker pair").
 
 ### 4.2 The protocol (pressure trigger, inside a turn)
 
+> **2026-10-10 deviation — CLOSE-TIME MARKERS (dogfood-forced).** The
+> protocol below was redesigned after the headless dogfood proved the
+> open-time markers replay-unsafe. The session format's replay validator
+> (dsh-session-format-v3-to-v4) requires: (a) `developer/message` events to
+> name the currently open turn+step — a nudge appended from a pre-step
+> listener sits BETWEEN steps and makes the whole session unresumable;
+> (b) `turn/*` events may not cross an open compaction, and
+> `compaction/summary|end` must match the open turn AND the start's owner
+> turn — a self-edit transaction can outlive its turn (the model may answer
+> final instead of editing), and nothing lets the engine append
+> `compaction/end` before `turn/end` (turn/end is appended in a finally
+> block of the agent loop; session/event callbacks cannot append
+> re-entrantly); (c) a replace carrying `source.kind ===
+> 'compact-checkpoint'` requires a matching OPEN compaction at that point
+> in the log; (d) `compaction/summary.shadowedSeqs` must name an exact
+> CURRENT surface span (i.e. the summary must immediately precede the
+> replace it meters); (e) unknown event types are rejected on load unless
+> marked `ignorable` — and `Session.append` cannot set that flag (only
+> `sourceEventSeqs`/`surfaceOp` pass through), so the log-only
+> `clm/compaction-nudge` event type broke every resume.
+>
+> Therefore: **the open transaction logs NOTHING stock.** Open state =
+> in-memory pending + a surface nudge carried as a `user/message`
+> (step-independent in both validators) whose `source` = `{ kind:
+> 'dsh-clm-compaction', compactionId, baselineTokens, budgetTokens,
+> deadlineSteps, trigger }`. The model's checkpoints are `user/message`
+> replaces with `source.kind === 'dsh-clm-checkpoint'` (NOT the stock kind
+> — rule (c)). At close, the engine atomically emits the ENTIRE textbook
+> chain in the CURRENT turn: `compaction/start` → `compaction/summary`
+> (citing the coverage span, which is exactly the current surface span —
+> rule (d)) → a consolidated `compact-checkpoint` replace (the model's
+> checkpoint texts under one framing) → `compaction/end`. Timeout/abort
+> append no markers — just a surface expiry notice (`source.expired:
+> true`). A turn boundary or a process death mid-transaction can no longer
+> corrupt the log; orphan adoption is unnecessary and was removed. The
+> stock UI sees one clean classic compaction per transaction.
+
 Per-session state: `pending: { compactionId, span {startSeq,endSeq},
 baselineTokens, nudgeSeq, startedAtStep, attempts }`.
 
@@ -404,21 +443,20 @@ baselineTokens, nudgeSeq, startedAtStep, attempts }`.
    trigger):
    - same threshold policy as basic (threshold/retain/prune — reused);
    - `selectCompactableRange` → span; if `null` → return `null`;
-   - `session.append('compaction/start', { compactionId, turn })` — lock;
-   - `session.append('developer/message', …)` — a **nudge** on the surface:
+   - **no markers** — record the in-memory pending entry;
+   - `session.append('user/message', …)` — a **nudge** on the surface:
      the target span (by the `context_edit` map's display numbers), the
      `compactionId`, a budget ("shrink nodes #a–#b from ~X to ≤ Y tokens"),
-     a deadline ("within N steps");
+     a deadline ("within N steps"); the transaction parameters ride in the
+     message `source` so the plugin discovers the transaction log-only;
    - return `null` (the condensation is not finished yet — honest per the
      contract: the result will appear later; basic's pre-step listener only
      logs a non-null result).
 2. **Self-edit phase** (ordinary agent steps): the model calls
    `context_edit({ op: 'edit', edits, compaction: '<compactionId>' })`. The
    `dsh-clm` plugin (modification in §4.5) commits the replacements with
-   `source: { kind: 'compact-checkpoint', compactionId, clm: true }` and,
-   **immediately before each replacement**, emits a log-only
-   `compaction/summary` (see §4.4): the contractual adjacency
-   "metering event → replace" (the shadow-price protocol) is preserved.
+   `source: { kind: 'dsh-clm-checkpoint', compactionId, clm: true }` — no
+   compaction markers of any kind (see the deviation above).
 3. **"Sufficiency detection + close" phase** (the next pre-step of the same
    engine):
    - `tokenMeter.measure(session)`; the span counts as sufficiently compact
@@ -426,13 +464,15 @@ baselineTokens, nudgeSeq, startedAtStep, attempts }`.
      our `compactionId`, the total span price is ≤ the target budget (a
      fraction of `baselineTokens`, config `targetReductionRatio`, def 0.5)
      **and** the edges remain tool-pairing balanced;
-   - yes → `session.append('compaction/end', { compactionId, turn })`,
-     assemble and return the `CompactionResult` (startSeq/summarySeq/endSeq
-     from the log, summary = concatenation of the checkpoint texts,
-     shadowed* from the recorded summary events);
+   - yes → emit the **close-time marker chain** (deviation above):
+     `compaction/start` → `compaction/summary` → consolidated
+     `compact-checkpoint` replace → `compaction/end`, all in the current
+     turn; assemble and return the `CompactionResult` (summary = the
+     concatenated checkpoint texts, shadowed* from the coverage span);
    - no → if `maxWaitSteps` (def 3) has not expired — return `null` and keep
      waiting.
-4. **Timeout / abort** → fallback (§4.3).
+4. **Timeout / abort** → surface expiry notice + fallback (§4.3); nothing
+   else is logged.
 
 For `context-overflow` the protocol is the same, but `maxWaitSteps` is
 smaller (def 1): overflow demands progress before the request retry; if the
@@ -444,9 +484,10 @@ real `replaceGeneration` growth.
 
 On timeout, explicit abort (`signal.aborted`), or a span-stability violation:
 
-1. `session.append('compaction/end', { compactionId, turn, error:
-   'clm-timeout' })` — release the lock (the failure is visible in the log,
-   as the contract requires).
+1. Append a surface expiry notice (`user/message`, `source.expired: true`)
+   retiring the id — under close-time markers no `compaction/end` is
+   needed (none was opened; a stray end would itself violate the replay
+   rules).
 2. Run the same span (revalidated with a `validateSurfaceRegion` equivalent)
    through the **classic path**: one-shot replay-summarize à la
    `summarizeWithLlm` (the same `COMPACTION_INSTRUCTION` or a shortened
@@ -455,8 +496,8 @@ On timeout, explicit abort (`signal.aborted`), or a span-stability violation:
    implement it via inheritance (§5.2) or by composing copied basic
    functions (bundle without imports, see §5.3).
 3. Escalation policy is configurable: `fallback: 'basic' | 'fail' | 'off'`
-   (`off` — CLM-only mode for clean A/B runs: after the timeout just
-   `compaction/end { error }` and `null`).
+   (`off` — CLM-only mode for clean A/B runs: after the timeout just the
+   expiry notice and `null`).
 
 ### 4.4 Events
 
@@ -464,18 +505,22 @@ The contractual `compaction/start|summary|end` are fully reused — telemetry,
 UI, and `compaction/summary-error` keep working unchanged. Filling
 particulars:
 
-- `compaction/summary` on self-edit is committed **by the dsh-clm plugin**
-  (it performs the replace): `summary` = the edit text, `provider/model` =
-  from `session.requestHeader().config` (the working route), **without**
-  `llmStreamCall` ("unmarked summarizer" — a stock branch of the type),
-  `rawOutput` optionally empty. `shadowedSeqs/shadowedTokenCount` — for the
-  edit's replaced range.
-- Binding to the transaction: the `compactionId` in the checkpoint's
-  `source` and in the summary event.
-- Additionally a log-only `clm/compaction-nudge { compactionId, span,
-  budgetTokens, deadlineStep }` (`ignorable: true`) — an audit trail of
-  "what we asked to compress". A new ordinary event type;
-  `SESSION_FORMAT_VERSION` is not bumped.
+- Under close-time markers (§4.2 deviation) the whole chain is committed
+  **by the engine, at close**: `compaction/summary.summary` = the
+  consolidated checkpoint text, `provider/model` = "unknown" (no LLM call
+  happens at close — the model wrote the content itself), **without**
+  `llmStreamCall`. `shadowedRange` is POSITIONAL (surface indexes; the
+  coverage seqs are not position-ordered after the model's replaces),
+  `shadowedSeqs` = the coverage nodes in surface order,
+  `shadowedTokenCount` = the coverage price.
+- Binding to the transaction: the `compactionId` in the nudge's `source`,
+  in each checkpoint's `source`, and in the close-time markers.
+- The nudge itself is the audit trail of "what we asked to compress":
+  a `user/message` with `source: { kind: 'dsh-clm-compaction',
+  compactionId, baselineTokens, budgetTokens, deadlineSteps, trigger }`
+  (the earlier log-only `clm/compaction-nudge` event type was removed —
+  unknown event types cannot be marked `ignorable` via `Session.append`
+  and therefore break session resume).
 
 ### 4.5 `dsh-clm` plugin changes (the `context_edit` tool)
 

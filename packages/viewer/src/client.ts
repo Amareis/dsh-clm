@@ -404,24 +404,29 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // 2. compaction attribution + live "awaiting self-edit" state (the
-      // CLM loop keeps compaction/start → end open across ordinary steps).
-      if (event.type === "compaction/start") {
-        state = {
-          ...state, compactionHint: true,
-          openCompaction: { compactionId: String(event.data && event.data.compactionId || "") },
-        };
-      } else if (event.type === "clm/compaction-nudge") {
-        if (state.openCompaction && event.data && event.data.compactionId === state.openCompaction.compactionId) {
+      // 2. compaction attribution + live "awaiting self-edit" state. Under
+      // close-time markers the OPEN transaction is visible only via the
+      // engine's nudge (a user/message with source.kind 'dsh-clm-compaction'
+      // carrying the budget); compaction/start appears only at close.
+      if (event.type === "user/message" && event.data && event.data.source
+        && (event.data.source as { kind?: string }).kind === "dsh-clm-compaction") {
+        const source = event.data.source as { compactionId?: unknown; budgetTokens?: unknown; deadlineSteps?: unknown; expired?: unknown };
+        if (source.expired === true) {
+          if (state.openCompaction && source.compactionId === state.openCompaction.compactionId) {
+            state = { ...state, openCompaction: null };
+          }
+        } else {
           state = {
-            ...state,
+            ...state, compactionHint: true,
             openCompaction: {
-              ...state.openCompaction,
-              budgetTokens: typeof event.data.budgetTokens === "number" ? event.data.budgetTokens : undefined,
-              deadlineSteps: typeof event.data.deadlineSteps === "number" ? event.data.deadlineSteps : undefined,
+              compactionId: String(source.compactionId || ""),
+              budgetTokens: typeof source.budgetTokens === "number" ? source.budgetTokens : undefined,
+              deadlineSteps: typeof source.deadlineSteps === "number" ? source.deadlineSteps : undefined,
             },
           };
         }
+      } else if (event.type === "compaction/start") {
+        state = { ...state, compactionHint: true };
       } else if (COMPACTION_HINT_TYPES.has(event.type)) {
         state = { ...state, compactionHint: true };
       } else if (event.type === "compaction/end") {

@@ -24,9 +24,8 @@ DSH="${DSH_BIN:-/Users/joe/.npm/_npx/1e7f6d9597241db0/node_modules/.bin/dsh}"
 WORK=/tmp/clm-dogfood
 
 if [[ -z "${KIMI_CODING_API_KEY:-}" ]]; then
-  echo "ERROR: KIMI_CODING_API_KEY is not set in this shell." >&2
-  echo "Run from a shell that has it (e.g. the one you start dsh web from)." >&2
-  exit 1
+  echo "NOTE: KIMI_CODING_API_KEY is not set; falling back to the credentials" >&2
+  echo "store (a kimi-coding key saved via the web Models page also works)." >&2
 fi
 
 mkdir -p "$HOME/.dsh/profiles/headless/node_modules/@local"
@@ -56,9 +55,27 @@ node "$DSH" headless --patch "$REPO/scripts/dogfood-headless.patch.yml" \
   > "$WORK/answer.txt" 2> "$WORK/run.log"
 status=$?
 set -e
-echo "== run exit: $status"
-tail -5 "$WORK/run.log" || true
-echo "== answer (head):"; head -5 "$WORK/answer.txt" || true
+echo "== run 1 exit: $status"
+tail -3 "$WORK/run.log" || true
+echo "== answer 1 (head):"; head -3 "$WORK/answer.txt" || true
+
+# Run 2: resume the SAME session in a FRESH process. Run 1 typically exits
+# with the transaction still open (the model finishes the task instead of
+# checkpointing) — the new engine must ADOPT the orphan from the log
+# (spec §4.8 robustness) and drive it to a close or a timeout+fallback
+# while the model works through ten small reads.
+SESSION_ID="$(basename "$(ls -dt "$HOME"/.dsh/sessions/*clm-dogfood*/session-* | head -1)")"
+echo "== resuming $SESSION_ID"
+set +e
+node "$DSH" headless --patch "$REPO/scripts/dogfood-headless.patch.yml" \
+  --session-id "$SESSION_ID" \
+  "For each chapter N from 1 to 10: use the read tool with an offset to re-read ONLY chapter N's header line, and report the exact title. Ten separate read calls, then a one-line table." \
+  > "$WORK/answer2.txt" 2> "$WORK/run2.log"
+status2=$?
+set -e
+echo "== run 2 exit: $status2"
+tail -3 "$WORK/run2.log" || true
+echo "== answer 2 (head):"; head -3 "$WORK/answer2.txt" || true
 
 echo "== compaction marker chain:"
 python3 - <<'EOF'
@@ -80,12 +97,12 @@ for line in out.splitlines():
         found = True
         slim = {k: (str(v)[:100]) for k, v in d.items() if k not in ("summary", "rawOutput", "shadowedSeqs")}
         print(f"  seq={e.get('seq')} {t} {json.dumps(slim)[:240]}")
-    elif t == "developer/message" and "clm-compaction" in json.dumps(d):
-        found = True
-        print(f"  seq={e.get('seq')} developer/message [clm-compaction nudge on surface]")
     elif t == "user/message":
-        src = (d.get("message") or {}).get("source") or {}
-        if isinstance(src, dict) and src.get("kind") == "compact-checkpoint":
+        src = d.get("source") or {}
+        if isinstance(src, dict) and src.get("kind") == "dsh-clm-compaction":
+            found = True
+            print(f"  seq={e.get('seq')} user/message [clm-compaction nudge on surface]")
+        elif isinstance(src, dict) and src.get("kind") == "compact-checkpoint":
             found = True
             print(f"  seq={e.get('seq')} user/message CHECKPOINT source={json.dumps(src)[:160]}")
 if not found:

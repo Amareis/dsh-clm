@@ -31,7 +31,6 @@ import type { BasicCompactionConfig } from "@deepseek-ai/dsh-compaction-basic";
 import { CompactionId, ManualCompactionError, toolPairingBalancedAfter, toolPairingBalancedBefore } from "@deepseek-ai/dsh-compaction";
 import type { Session, SessionSeq } from "@deepseek-ai/dsh-session";
 import {
-  currentPosition,
   inspectCompactionEntryState,
   reservedCompletionTokens,
   resolveCompactSpec,
@@ -215,6 +214,43 @@ function sourceOf(event: LogEvent): Record<string, unknown> | undefined {
   return data?.source ?? data?.message?.source;
 }
 
+/** Source kind of the MODEL's checkpoint commits (the plugin's
+ *  context_edit compaction mode). Deliberately NOT 'compact-checkpoint':
+ *  the replay validator requires a replace carrying the stock kind to have
+ *  a matching OPEN compaction at that point in the log, and checkpoints
+ *  land while no markers exist yet (close-time markers). The consolidated
+ *  node the engine writes at close DOES use the stock kind. */
+const CLM_CHECKPOINT_KIND = "dsh-clm-checkpoint";
+
+/** Framing duplicated from the dsh-clm plugin (src/core/compaction.ts —
+ *  the engine bundle cannot import the plugin). Keep in sync. */
+const CHECKPOINT_PREAMBLE =
+  "This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.";
+const SUMMARY_OPEN_TAG = "<compacted-summary>";
+const SUMMARY_CLOSE_TAG = "</compacted-summary>";
+
+/** Whether the surface node is one of OUR checkpoint commits. */
+function isClmCheckpoint(session: Session, seq: SessionSeq): boolean {
+  const event = session.eventAt(seq) as unknown as LogEvent | undefined;
+  if (event === undefined) return false;
+  const source = sourceOf(event);
+  return source?.kind === CLM_CHECKPOINT_KIND;
+}
+
+/** Text of a checkpoint node with the framing stripped (the consolidated
+ *  close node re-wraps everything in ONE frame). Falls back to the raw
+ *  text when the framing is absent. */
+function extractCheckpointText(session: Session, seq: SessionSeq): string {
+  const event = session.eventAt(seq) as unknown as LogEvent | undefined;
+  const data = (event?.data ?? {}) as { content?: Array<{ type?: string; text?: string }>; message?: { content?: Array<{ type?: string; text?: string }> } };
+  const blocks = data.content ?? data.message?.content ?? [];
+  const raw = blocks.map((block) => block.text ?? "").join("\n");
+  const open = raw.indexOf(SUMMARY_OPEN_TAG);
+  const close = raw.indexOf(SUMMARY_CLOSE_TAG);
+  if (open !== -1 && close > open) return raw.slice(open + SUMMARY_OPEN_TAG.length, close).trim();
+  return raw.trim();
+}
+
 /** First ~80 chars of a node's projected text, for the nudge's "find this
  *  in the map" anchors. */
 function nodePreview(session: Session, seq: SessionSeq): string {
@@ -369,11 +405,16 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
         const errorText = signal.aborted
           ? "clm-aborted: the turn was cancelled while awaiting self-edit"
           : `clm-timeout: self-edit did not reach the budget within ${maxWait} steps`;
-        (session.append as (type: string, data: unknown) => unknown)("compaction/end", {
-          compactionId: pending.compactionId,
-          turn: pending.turn,
-          error: errorText,
-        });
+        // Nothing was logged at open, so no marker needs closing. A short
+        // surface notice retires the id so the model stops checkpointing
+        // into a dead transaction (user/message = step-independent, like
+        // the nudge itself).
+        session.append("user/message", {
+          id: `dsh-clm-compaction-${randomUUID()}`,
+          role: "user",
+          content: [{ type: "text", text: `[clm-compaction ${pending.compactionId}] Expired (${errorText}). The engine is handling compaction itself now — do not call context_edit with this compaction id.` }],
+          source: { kind: "dsh-clm-compaction", compactionId: pending.compactionId, expired: true },
+        } as unknown as never, { surfaceOp: "append" });
         // De-escalation bookkeeping (spec §6 item 4): only the automatic
         // path counts — a compactRegion caller explicitly asked for CLM.
         if (pending.origin === "auto") {
@@ -442,10 +483,15 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
     const pricedSpan = nodes.slice(startIdx, endIdx + 1);
     const baselineTokens = pricedSpan.reduce((sum, node) => sum + node.heuristicTokens, 0);
     const compactionId = CompactionId(randomUUID());
-    const startEvent = session.append("compaction/start", { compactionId, turn: entry.openTurn }) as unknown as LogEvent;
+    // CLOSE-TIME MARKERS (spec §4.2 deviation, forced by the session format —
+    // see closeTransaction): NOTHING is logged at open. The open state is the
+    // in-memory pending entry plus the surface nudge; the stock
+    // compaction/start|summary|replace|end chain is emitted atomically at
+    // close, inside one pre-step, so a turn boundary or a process death can
+    // never strand an open transaction in the log.
     const pendingClm: PendingClm = {
       compactionId,
-      startSeq: startEvent.seq,
+      startSeq: -1 as unknown as SessionSeq, // set to the nudge's seq below
       span: range,
       shadowedSeqs: pricedSpan.map((node) => node.seq),
       baselineTokens,
@@ -456,23 +502,18 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       stepsWaited: 0,
       lastPrice: baselineTokens,
     };
-    const maxWait = trigger === "context-overflow" ? this.clm.overflowMaxWaitSteps : this.clm.maxWaitSteps;
-    (session.append as (type: string, data: unknown, intent?: unknown) => unknown)("clm/compaction-nudge", {
-      compactionId,
-      span: { start: range.start, end: range.end },
-      baselineTokens,
-      budgetTokens: pendingClm.budgetTokens,
-      deadlineSteps: maxWait,
-    }, { ignorable: true });
+    const nudgeEvent = this.nudge(session, pendingClm);
+    (pendingClm as { startSeq: SessionSeq }).startSeq = nudgeEvent.seq;
     this.pending.set(session, pendingClm);
-    this.nudge(session, pendingClm);
     return null;
   }
 
-  /** Surface nudge: an additive developer/message telling the model which
-   *  span to fold, to what budget, by which deadline (spec §4.2 step 1).
-   *  Positions are map node indexes; first/last previews anchor the search. */
-  private nudge(session: Session, pending: PendingClm, currentPrice?: number): void {
+  /** Surface nudge: an additive user/message telling the model which span
+   *  to fold, to what budget, by which deadline (spec §4.2 step 1). The
+   *  source carries the full transaction parameters so the context_edit
+   *  plugin can discover the open transaction log-only (findOpenCompaction).
+   *  Returns the appended event (its seq anchors the pending entry). */
+  private nudge(session: Session, pending: PendingClm, currentPrice?: number): LogEvent {
     const surfaceNodes = session.surface.nodes as readonly SessionSeq[];
     const startPos = surfaceNodes.indexOf(pending.span.start);
     const endPos = surfaceNodes.indexOf(pending.span.end);
@@ -487,17 +528,29 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       `Use context_edit: call map, find the units covering those positions, and replace them with one compact summary that keeps the user's goal and exact words, your active plan, exact identifiers/paths/commands, and negative knowledge. Pass compaction: "${pending.compactionId}" in the context_edit call so the edit counts toward this transaction.${progress}`,
       `If the deadline passes, the engine falls back to a one-shot classic summary of the same span.`,
     ].join(" ");
-    const { turn, step } = currentPosition(session);
-    session.append("developer/message", {
-      turn,
-      step,
-      message: {
-        id: `dsh-clm-compaction-${randomUUID()}`,
-        role: "developer",
-        content: [{ type: "text", text }],
-        source: { kind: "dsh-clm-compaction", compactionId: pending.compactionId },
-      } as unknown as never, // branded MessageId / custom source kind — the bundle can't import the brand types
-    }, { surfaceOp: "append" });
+    // Carrier: user/message, NOT developer/message. The nudge fires from a
+    // PRE-STEP listener (between steps), and the replay validator
+    // (dsh-session-format-v3-to-v4) requires developer/message to name the
+    // currently open turn+step — a developer nudge makes the whole session
+    // UNRESUMABLE (found by the headless dogfood 2026-10-10: "stored log is
+    // corrupt … does not match an open turn and step"). user/message is
+    // step-independent in BOTH validators (live: `case "user/message":
+    // break`, replay: not in STEP_EVENT_TYPES) and still folds onto the
+    // surface as a first-class node — the same carrier checkpoints use.
+    return session.append("user/message", {
+      id: `dsh-clm-compaction-${randomUUID()}`,
+      role: "user",
+      content: [{ type: "text", text }],
+      source: {
+        kind: "dsh-clm-compaction",
+        compactionId: pending.compactionId,
+        baselineTokens: pending.baselineTokens,
+        budgetTokens: pending.budgetTokens,
+        deadlineSteps: maxWait,
+        trigger: pending.trigger,
+      },
+    } as unknown as never, // branded MessageId / custom source kind — the bundle can't import the brand types
+    { surfaceOp: "append" }) as unknown as LogEvent;
   }
 
   /**
@@ -519,7 +572,7 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       if (!include) {
         const event = session.eventAt(node.seq);
         const source = event === undefined ? undefined : sourceOf(event as unknown as LogEvent);
-        if (source?.kind === "compact-checkpoint" && source.compactionId === pending.compactionId) {
+        if (source?.kind === CLM_CHECKPOINT_KIND && source.compactionId === pending.compactionId) {
           include = true;
           checkpoints += 1;
         }
@@ -541,43 +594,80 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
     return toolPairingBalancedBefore(session, first.seq) && toolPairingBalancedAfter(session, last.seq);
   }
 
-  /** Phase 3: close the transaction and assemble the CompactionResult from
-   *  the recorded `compaction/summary` events (spec §4.2 step 3). */
+  /** Phase 3: close the transaction (spec §4.2 step 3 — CLOSE-TIME MARKERS
+   *  variant). The session format (dsh-session-format-v3-to-v4 replay)
+   *  requires the whole compaction chain — start, summary, surface
+   *  replacement, end — to live inside ONE turn with the summary adjacent
+   *  to the replace it meters (`turn/* crosses an open compaction`,
+   *  `compaction/end changes its owner turn`, `shadowedSeqs do not name an
+   *  exact current surface span`). A multi-step self-edit transaction can
+   *  outlive its turn (the model may answer final instead of editing), so
+   *  the engine logs NOTHING at open and emits the entire stock chain
+   *  atomically here, in the current turn: the checkpoints the model
+   *  already committed are consolidated into one `compact-checkpoint`
+   *  node and the coverage span (checkpoint + leftover nodes, contiguous
+   *  by construction) is replaced by it — a textbook classic compaction
+   *  for the stock UI, priced exactly like the coverage it retires. */
   private closeTransaction(session: Session, pending: PendingClm): CompactionResultT {
-    interface SummaryRecord {
-      seq: SessionSeq;
-      summary: Array<{ type: string; text?: string }>;
-      shadowedSeqs: SessionSeq[];
-      shadowedTokenCount: number;
-    }
-    const summaries: SummaryRecord[] = [];
-    for (let seq = pending.startSeq as unknown as number; seq < session.seq; seq += 1) {
-      const event = session.eventAt(seq as SessionSeq) as unknown as LogEvent;
-      if (event.type !== "compaction/summary") continue;
-      const data = event.data as { compactionId?: string; summary?: SummaryRecord["summary"]; shadowedSeqs?: SessionSeq[]; shadowedTokenCount?: number };
-      if (data.compactionId !== pending.compactionId) continue;
-      summaries.push({
-        seq: event.seq,
-        summary: data.summary ?? [],
-        shadowedSeqs: data.shadowedSeqs ?? [],
-        shadowedTokenCount: data.shadowedTokenCount ?? 0,
-      });
-    }
+    const coverage = this.coverage(session, pending)!; // caller checked isCompactEnough
+    const coverageSeqs = coverage.nodes.map((node) => node.seq);
+    const first = coverageSeqs[0]!;
+    const last = coverageSeqs[coverageSeqs.length - 1]!;
+    const checkpointTexts = coverageSeqs
+      .filter((seq) => isClmCheckpoint(session, seq))
+      .map((seq) => extractCheckpointText(session, seq));
+    const consolidated = [
+      CHECKPOINT_PREAMBLE,
+      "",
+      `${SUMMARY_OPEN_TAG}\n${checkpointTexts.join("\n\n")}\n${SUMMARY_CLOSE_TAG}`,
+    ].join("\n");
+    const turn = inspectCompactionEntryState(session).openTurn;
+    // shadowedRange is POSITIONAL (the replay span() check slices
+    // surface.nodes with it): after the model's replaces, coverage seqs are
+    // no longer position-ordered (the checkpoint node slides to the span's
+    // first position), so seqs != positions here. surfaceOp startSeq/endSeq
+    // stay the coverage's first/last SEQS — the surface manager resolves
+    // them positionally, so (checkpointSeq > leftoverSeq) pairs are legal.
+    const surfaceNodes = session.surface.nodes as readonly SessionSeq[];
+    const startPos = surfaceNodes.indexOf(first);
+    const endPos = surfaceNodes.indexOf(last);
+    const startEvent = (session.append as (type: string, data: unknown) => LogEvent)("compaction/start", {
+      compactionId: pending.compactionId,
+      turn,
+    });
+    const summaryEvent = (session.append as (type: string, data: unknown) => LogEvent)("compaction/summary", {
+      compactionId: pending.compactionId,
+      summary: [{ type: "text", text: consolidated }],
+      shadowedRange: { start: startPos, end: endPos },
+      shadowedSeqs: [...coverageSeqs],
+      shadowedTokenCount: coverage.price,
+      provider: "unknown",
+      model: "unknown",
+    });
+    const checkpointEvent = session.append("user/message", {
+      id: `dsh-clm-${randomUUID()}`,
+      role: "user",
+      content: [{ type: "text", text: consolidated }],
+      source: { kind: "compact-checkpoint", compactionId: pending.compactionId, clm: true },
+    } as unknown as never, {
+      surfaceOp: { op: "replace", startSeq: first, endSeq: last },
+      sourceEventSeqs: [startEvent.seq, summaryEvent.seq, ...coverageSeqs],
+    }) as unknown as LogEvent;
     const endEvent = (session.append as (type: string, data: unknown) => LogEvent)("compaction/end", {
       compactionId: pending.compactionId,
-      turn: pending.turn,
+      turn,
     });
-    const lastSummary = summaries[summaries.length - 1];
     const result = {
       compactionId: pending.compactionId,
-      startSeq: pending.startSeq,
-      summarySeq: lastSummary?.seq ?? pending.startSeq,
+      startSeq: startEvent.seq,
+      summarySeq: summaryEvent.seq,
       endSeq: endEvent.seq,
-      summary: summaries.flatMap((record) => record.summary),
+      summary: [{ type: "text", text: consolidated }],
       shadowedRange: { start: pending.span.start, end: pending.span.end },
       shadowedSeqs: [...pending.shadowedSeqs],
       shadowedTokenCount: pending.baselineTokens,
     } as unknown as CompactionResultT;
+    void checkpointEvent;
     pending.waiter?.resolve(result);
     // A successful close resets the de-escalation counter (spec §6 item 4).
     this.consecutiveTimeouts.delete(session);
@@ -656,10 +746,11 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
     const pricedSpan = measurement.nodes.slice(startIdx, endIdx + 1);
     const baselineTokens = pricedSpan.reduce((sum, node) => sum + node.heuristicTokens, 0);
     const compactionId = CompactionId(randomUUID());
-    const startEvent = session.append("compaction/start", { compactionId, turn: entry.openTurn }) as unknown as LogEvent;
+    // Marker-free open — same close-time-markers rationale as the pressure
+    // path (see phase 1).
     const pending: PendingClm = {
       compactionId,
-      startSeq: startEvent.seq,
+      startSeq: -1 as unknown as SessionSeq, // set to the nudge's seq below
       span: { start: start as unknown as SessionSeq, end: end as unknown as SessionSeq },
       shadowedSeqs: pricedSpan.map((node) => node.seq),
       baselineTokens,
@@ -670,15 +761,9 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       stepsWaited: 0,
       lastPrice: baselineTokens,
     };
-    (session.append as (type: string, data: unknown, intent?: unknown) => unknown)("clm/compaction-nudge", {
-      compactionId,
-      span: pending.span,
-      baselineTokens,
-      budgetTokens: pending.budgetTokens,
-      deadlineSteps: this.clm.maxWaitSteps,
-    }, { ignorable: true });
+    const nudgeEvent = this.nudge(session, pending);
+    (pending as { startSeq: SessionSeq }).startSeq = nudgeEvent.seq;
     this.pending.set(session, pending);
-    this.nudge(session, pending);
     // Hold the promise until the close detector fires on a later pre-step
     // (spec §6 open question 2); abort settles immediately.
     return await new Promise<CompactionResultT>((resolve, reject) => {
@@ -688,12 +773,9 @@ export class ClmCompactionEngine extends BasicCompactionEngine {
       };
       signal?.addEventListener("abort", () => {
         if (!this.pending.has(session)) return;
+        // Nothing was logged at open, so nothing needs closing — the
+        // surface nudge stays as inert history (the waiter rejects).
         this.pending.delete(session);
-        (session.append as (type: string, data: unknown) => unknown)("compaction/end", {
-          compactionId,
-          turn: pending.turn,
-          error: "clm-aborted: compactRegion's signal fired while awaiting self-edit",
-        });
         reject(signal.reason instanceof Error ? signal.reason : new Error("compactRegion aborted"));
       }, { once: true });
     });

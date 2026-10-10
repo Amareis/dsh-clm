@@ -141,30 +141,23 @@ export function applyEdits(session: Session, meter: MeterLike | undefined, edits
   // Phase 2: apply (highest span first — lower spans' positional ranges are
   // untouched by higher replaces, so the precomputed shadowed seqs stay exact).
   const receipts: string[] = [];
-  const route = (session.requestHeader() as { config?: { provider?: string; model?: string } } | null)?.config;
   for (const item of prepared) {
     if (compaction !== undefined) {
-      // Checkpoint mode (spec §4.5.1): meter the replace with a
-      // `compaction/summary` event IMMEDIATELY before it (contractual
-      // shadow-price adjacency), then commit a user/message checkpoint the
-      // stock UI recognizes structurally.
-      const summaryEvent = (session.append as (type: string, data: unknown) => { seq: number })("compaction/summary", {
-        compactionId: compaction.compactionId,
-        summary: [{ type: "text", text: item.edit.content }],
-        shadowedRange: { start: item.startSeq, end: item.endSeq },
-        shadowedSeqs: item.shadowedSeqs,
-        shadowedTokenCount: item.spanTokens,
-        provider: route?.provider ?? "unknown",
-        model: route?.model ?? "unknown",
-      });
+      // Checkpoint mode (spec §4.5.1 — close-time-markers variant): commit a
+      // user/message checkpoint WITHOUT any compaction markers — the engine
+      // consolidates all checkpoints into ONE stock chain at close time.
+      // The kind is deliberately NOT 'compact-checkpoint': a replace with
+      // the stock kind requires a matching OPEN compaction at that point in
+      // the log on replay, and no markers exist while the transaction is
+      // open (the checkpoint may even land in a later turn than the nudge).
       session.append("user/message", {
         id: `dsh-clm-${crypto.randomUUID()}` as MessageId,
         role: "user",
         content: [{ type: "text", text: `${CHECKPOINT_PREAMBLE}\n\n${SUMMARY_OPEN_TAG}\n${item.edit.content}\n${SUMMARY_CLOSE_TAG}` }],
-        source: { kind: "compact-checkpoint", compactionId: compaction.compactionId, clm: true } as unknown as MessageSource
+        source: { kind: "dsh-clm-checkpoint", compactionId: compaction.compactionId, clm: true } as unknown as MessageSource
       }, {
         surfaceOp: { op: "replace", startSeq: asSeq(item.startSeq), endSeq: asSeq(item.endSeq) },
-        sourceEventSeqs: [asSeq(compaction.startSeq), asSeq(summaryEvent.seq), ...item.shadowedSeqs] as SessionSeq[]
+        sourceEventSeqs: [asSeq(compaction.startSeq), ...item.shadowedSeqs] as SessionSeq[]
       });
       const target = compaction.budgetTokens === undefined ? "" : `, target ≤ ${formatTokens(compaction.budgetTokens)}t`;
       receipts.push(`#${item.edit.fromUnit}–#${item.edit.toUnit} → 1 checkpoint node (freed ~${formatTokens(Math.max(0, item.freed))}t; compaction ${compaction.compactionId}: span ~${formatTokens(item.spanTokens)}t → ~${formatTokens(Math.ceil(item.edit.content.length / 4))}t${target})`);

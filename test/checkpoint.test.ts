@@ -5,16 +5,16 @@ import { editableSurface, type TestSession } from "./helpers.js";
 
 const CMP_ID = "cmp-test-1";
 
-/** Open a CLM self-edit transaction the way the engine does (log-only). */
-function openTransaction(session: TestSession, id: string = CMP_ID, budgetTokens = 500): void {
-  session.append("compaction/start", { compactionId: id, turn: 0 });
-  session.append("clm/compaction-nudge", {
-    compactionId: id,
-    span: { start: 1, end: 2 },
-    baselineTokens: 1000,
-    budgetTokens,
-    deadlineSteps: 3,
-  }, { ignorable: true });
+/** Open a CLM self-edit transaction the way the engine does (close-time
+ *  markers): ONE surface nudge user/message whose source carries the
+ *  transaction parameters — nothing else is logged at open. Returns the
+ *  nudge event's seq. */
+function openTransaction(session: TestSession, id: string = CMP_ID, budgetTokens = 500): number {
+  session.append("user/message", {
+    content: [{ type: "text", text: `[clm-compaction ${id}] Context pressure: condense the conversation span at map node positions 1–2 (~1000 tokens) down to ≤ ${budgetTokens} tokens, within 3 steps.` }],
+    source: { kind: "dsh-clm-compaction", compactionId: id, baselineTokens: 1000, budgetTokens, deadlineSteps: 3, trigger: "pressure" },
+  });
+  return (session.seq as unknown as number) - 1;
 }
 
 describe("findOpenCompaction", () => {
@@ -22,22 +22,36 @@ describe("findOpenCompaction", () => {
     expect(findOpenCompaction(editableSurface(), CMP_ID)).toBeUndefined();
   });
 
-  it("finds an unmatched start and picks up the nudge budget", () => {
+  it("finds the open transaction via the nudge and picks up the budget", () => {
     const session = editableSurface();
-    openTransaction(session);
+    const nudgeSeq = openTransaction(session);
     const open = findOpenCompaction(session, CMP_ID);
     expect(open).toBeDefined();
     expect(open!.compactionId).toBe(CMP_ID);
+    expect(open!.startSeq).toBe(nudgeSeq); // the nudge event's seq
+    expect(open!.turn).toBeNull();
     expect(open!.budgetTokens).toBe(500);
     expect(open!.baselineTokens).toBe(1000);
     expect(open!.deadlineSteps).toBe(3);
-    expect(open!.startSeq).toBeGreaterThan(0);
+
+    // A compaction/end with the id retires the transaction.
+    session.append("compaction/end", { compactionId: CMP_ID, turn: 0 });
+    expect(findOpenCompaction(session, CMP_ID)).toBeUndefined();
+
+    // …and so does a nudge whose source is marked expired (timeout: the
+    // engine took over).
+    const expired = editableSurface();
+    expired.append("user/message", {
+      content: [{ type: "text", text: `[clm-compaction ${CMP_ID}] Expired (clm-timeout: test). The engine is handling compaction itself now.` }],
+      source: { kind: "dsh-clm-compaction", compactionId: CMP_ID, budgetTokens: 500, expired: true },
+    });
+    expect(findOpenCompaction(expired, CMP_ID)).toBeUndefined();
   });
 
   it("returns undefined once the transaction closed (timeout/close)", () => {
     const session = editableSurface();
     openTransaction(session);
-    session.append("compaction/end", { compactionId: CMP_ID, turn: 0, error: "clm-timeout: test" });
+    session.append("compaction/end", { compactionId: CMP_ID, turn: 0 });
     expect(findOpenCompaction(session, CMP_ID)).toBeUndefined();
   });
 
@@ -49,9 +63,9 @@ describe("findOpenCompaction", () => {
 });
 
 describe("applyEdits in checkpoint mode", () => {
-  it("commits a user/message checkpoint with a metering summary event immediately before it", () => {
+  it("commits a user/message checkpoint with the plugin framing and no summary event", () => {
     const session = editableSurface();
-    openTransaction(session);
+    const nudgeSeq = openTransaction(session);
     const open = findOpenCompaction(session, CMP_ID)!;
     const receipt = applyEdits(session, undefined, [{ from: 1, to: 2, content: "[condensed by the model]" }], open);
 
@@ -60,25 +74,23 @@ describe("applyEdits in checkpoint mode", () => {
     expect(receipt).toContain(`compaction ${CMP_ID}`);
     expect(receipt).toContain("target ≤");
 
-    // Contractual adjacency: compaction/summary sits IMMEDIATELY before the replace.
-    const summaryIdx = session.appends.findIndex((a) => a.type === "compaction/summary");
-    expect(summaryIdx).toBeGreaterThan(-1);
-    const replace = session.appends[summaryIdx + 1]!;
+    // Close-time markers: NO metering event — the engine emits the whole
+    // stock compaction/start|summary|end chain at close time.
+    expect(session.appends.some((a) => a.type === "compaction/summary")).toBe(false);
+    expect(session.appends.some((a) => a.type === "compaction/start")).toBe(false);
+
+    // The checkpoint is a user/message replace with the PLUGIN's checkpoint
+    // kind (deliberately not the stock 'compact-checkpoint': that kind
+    // requires a matching open compaction on replay, and none exists while
+    // the transaction is open).
+    const replace = session.appends.find((a) => (a.data.source as { kind?: string } | undefined)?.kind === "dsh-clm-checkpoint")!;
     expect(replace.type).toBe("user/message");
     expect(replace.ref).toBeDefined();
+    expect((replace.ref!.surfaceOp as { op: string }).op).toBe("replace");
 
-    // The summary event meters the shadowed span (spec §4.4).
-    const summary = session.appends[summaryIdx]!.data as Record<string, unknown>;
-    expect(summary.compactionId).toBe(CMP_ID);
-    expect(summary.shadowedTokenCount).toBeGreaterThan(0);
-    expect(Array.isArray(summary.shadowedSeqs)).toBe(true);
-    expect((summary.shadowedSeqs as number[]).length).toBeGreaterThan(0);
-    expect(summary.llmStreamCall).toBeUndefined();
-
-    // The checkpoint is a user/message recognized structurally by the stock UI.
     const checkpoint = replace.data as { role?: string; content?: Array<{ text: string }>; source?: Record<string, unknown> };
     expect(checkpoint.role).toBe("user");
-    expect(checkpoint.source?.kind).toBe("compact-checkpoint");
+    expect(checkpoint.source?.kind).toBe("dsh-clm-checkpoint");
     expect(checkpoint.source?.compactionId).toBe(CMP_ID);
     expect(checkpoint.source?.clm).toBe(true);
 
@@ -89,10 +101,11 @@ describe("applyEdits in checkpoint mode", () => {
     expect(text).toContain("[condensed by the model]");
     expect(text).toContain(SUMMARY_CLOSE_TAG);
 
-    // The replace cites the transaction's start event plus the shadowed seqs.
-    const cited = (replace.ref as { sourceEventSeqs: number[] }).sourceEventSeqs;
-    expect(cited).toContain(open.startSeq);
-    for (const seq of summary.shadowedSeqs as number[]) expect(cited).toContain(seq);
+    // The replace cites the nudge event plus the shadowed seqs.
+    const cited = replace.ref!.sourceEventSeqs!;
+    expect(cited[0]).toBe(nudgeSeq);
+    expect(cited[0]).toBe(open.startSeq);
+    expect(cited.length).toBeGreaterThan(1);
   });
 
   it("still rejects edits that violate the ordinary invariants in checkpoint mode", () => {
