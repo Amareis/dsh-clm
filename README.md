@@ -58,8 +58,10 @@ This repo is the CLM toolkit monorepo: the `context_edit` plugin at the root
   (spec in [docs/context-viewer-tab.md](docs/context-viewer-tab.md)): the
   model-visible surface fold + version history, TypeScript port of the
   original `clm-context-viewer` bundle.
-- `packages/preset/` — `@local/dsh-clm-preset`, the `clm` agent preset,
-  **generated** from the shipped cordis preset by
+- `packages/preset/` — `@local/dsh-clm-preset`, the CLM agent presets —
+  **`clm`** (everyday work, derived from the shipped standard preset) and
+  **`clm-creator`** (cordis development tooling, derived from the shipped
+  cordis preset) — **generated** by
   `packages/preset/scripts/gen-preset.mjs` (never hand-copied — re-run
   `npm run gen:preset` after a dsh update; `npm run check` fails when stale).
 

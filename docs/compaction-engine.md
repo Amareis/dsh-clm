@@ -1,7 +1,9 @@
 # Design: `dsh-clm-compaction` — a CLM condensation engine for DSH
 
 > **Status: Stage 1 implemented** (`packages/compaction`). Stage 0 (the CLM
-> preset) is done as a GENERATED declaration (`packages/preset`, see §0).
+> presets) is done as GENERATED declarations (`packages/preset`): `clm`
+> (everyday work, from the shipped standard preset) and `clm-creator`
+> (cordis dev tooling, from the shipped cordis preset).
 > Stage 1 ships `ClmCompactionEngine extends BasicCompactionEngine` with the
 > full config surface parsed (`maxWaitSteps`, `overflowMaxWaitSteps`,
 > `targetReductionRatio`, `fallback`, `manual`), `manual: 'reject'` honored,
