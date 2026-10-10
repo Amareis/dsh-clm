@@ -1,0 +1,58 @@
+# Headless Stage-2 dogfood overlay (compaction-engine.md §4.2 live check).
+# Boot: dsh --profile headless --patch <this file> -- <task>
+#
+# What it does to the headless composition:
+#   1. Disables compaction-basic's AUTO listeners (auto: false) — the entry
+#      itself stays so mount-order consumers of ctx.compaction still resolve
+#      at mount time; the CLM engine appended below re-registers the service.
+#      (Patch rows cannot rename an entry — name is a match guard — and plain
+#      inserts append at the end, after command-compact; hence this dance.)
+#   2. Appends @local/dsh-clm-compaction with a tiny thresholdRatio so the
+#      three-phase loop fires after ~21K tokens instead of ~160K (the
+#      protocol is size-independent; this keeps the dogfood cheap). Its
+#      constructor registers the pre-step/request-error listeners (auto
+#      defaults to true) and wins the ctx.compaction registration.
+#   3. Appends the dsh-clm host plugin (context_edit with the `compaction`
+#      checkpoint parameter).
+#   4. Routes the run at kimi-coding/k3-256k; the API key resolves from
+#      KIMI_CODING_API_KEY in the LAUNCHING environment.
+#
+# Requires: @local/{dsh-clm,dsh-clm-compaction} symlinks under
+# ~/.dsh/profiles/headless/node_modules/@local/ (scripts/dogfood-headless.sh
+# creates them).
+
+- id: compaction-basic
+  config:
+    auto: false
+
+- insert:
+    - id: clm-compaction
+      name: '@local/dsh-clm-compaction'
+      config:
+        # Dogfood tuning: fire the loop early. Everything else stays default
+        # so the observed behavior matches production (auto, fallback basic).
+        thresholdRatio: 0.08 # ~21K of 262144
+        retainRatio: 0.02
+        maxWaitSteps: 10
+        overflowMaxWaitSteps: 2
+    - id: dsh-clm
+      name: '@local/dsh-clm'
+      config: {}
+
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      kimi-coding:
+        apiKeyEnv: KIMI_CODING_API_KEY
+        models:
+          - id: k3-256k
+            name: Kimi K3-256K
+            contextWindow: 262144
+            maxTokens: 32768
+
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: kimi-coding
+    model: k3-256k
