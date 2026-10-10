@@ -47,8 +47,22 @@ Format per entry:
   the current phase; page/filter large inspections instead of reading them
   whole. The 75% "run context_edit now" line should be treated as a hard
   stop.
-- **Postscript** — after the model switch the same surface measured ~17% of
-  the 1M window, so the deferred pass was skipped as unnecessary. Note:
-  thresholds are relative to the routed window — a mid-session window
-  change resets the escalation state, which the log should keep in mind
-  when judging the strategy.
+- **Postscript (root cause, measured from the session log)** — turn 4 ended
+  with provider 400 "Your request exceeded k3-256k model token limit:
+  262144", code INVALID_REQUEST. Per-step provider `usage` shows: last
+  success 186,462 tokens (step 87), then ~1KB of new events, then the 400 —
+  the failing request was ~187.5K tokens. So the wall sat at **~71.3% of
+  the raw window** — almost exactly the 70% nudge. The provider DOES
+  reserve completion budget, but by an unmeasurable amount: K ≈ 75K
+  (186,029 + K ≤ 262,144 succeeded; ~187,500 + K failed) — neither the
+  nominal maxTokens 131072 (an adapter default) nor 2×32768. Estimator
+  error was NOT the cause (local count 183K vs provider 186K — ~2%).
+  Actions taken: (1) user lowered k3-256k maxTokens to 32768 → worst-case
+  prompt ceiling 229,376 (87.5%); (2) the budget counter keeps the raw
+  window with NO reservation formula (any formula would mislead — K is
+  provider-specific), relying on the 70/75/90 thresholds for the margin;
+  (3) logged the classification gap as compaction-engine.md §6 item 9.
+- **Postscript 2** — after the model switch the same surface measured ~17%
+  of the 1M window, so the deferred pass was skipped as unnecessary.
+  Thresholds are relative to the routed window — a mid-session window
+  change resets the escalation state.

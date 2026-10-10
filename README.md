@@ -40,8 +40,11 @@ instead of waiting for the harness to compact it on a schedule.
    refreshed every step but re-committed only when the 5%-bucketed text
    changes:
    `context budget: ~15% of 262.1K tokens · self-edits applied: 2`,
-   with nudge lines at 70/75/90%. Token counting via `ctx.tokenMeter`
-   (fallback: chars/4).
+   with nudge lines at 70/75/90%. The window is the raw `contextWindow`:
+   the provider's completion reserve is provider-specific and unmeasurable
+   (measured ≈75K on one route — see docs/self-compaction-log.md), so the
+   thresholds carry the safety margin instead of a formula. Token counting
+   via `ctx.tokenMeter` (fallback: chars/4).
 
 ## Repository layout
 

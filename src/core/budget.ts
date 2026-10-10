@@ -28,6 +28,14 @@ export function renderBudget(session: Session, meter: MeterLike | undefined): st
     const coarse = Math.round(total / 5_000) * 5_000;
     return `context budget: ~${formatTokens(coarse)} tokens in context · self-edits applied: ${edits}`;
   }
+  // NOTE: deliberately NO maxTokens reservation here. The dogfooding overflow
+  // (docs/self-compaction-log.md, 2026-10-10) pinned the provider's wall at
+  // ~71% of the raw window with maxTokens = window/2 — the provider DOES
+  // reserve completion budget, but by an unmeasurable provider-specific
+  // amount (~75K there, neither the nominal 131K nor a clean 32K). Any
+  // formula we baked in would mislead; instead the raw-window counter relies
+  // on the 70/75/90 thresholds carrying the margin — and the observed wall
+  // matched the 70% nudge almost exactly.
   // Quantize to 5% buckets: the durable snapshot rides history unchanged until
   // the bucket flips, so identical text never re-commits. Threshold lines align
   // with buckets (70/75/90 are multiples of 5).

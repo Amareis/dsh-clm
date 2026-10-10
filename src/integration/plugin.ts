@@ -13,7 +13,9 @@
  *     replacements (source.kind === 'dsh-clm'). The event log stays append-only.
  *  2. System-prompt section with the edit policy (when to edit, invariants).
  *  3. Runtime-context budget counter (durable snapshot, re-committed only when
- *     the 5%-bucketed text changes — see core/budget.ts).
+ *     the 5%-bucketed text changes; raw contextWindow — the provider's
+ *     completion reserve is unmeasurable, thresholds carry the margin;
+ *     see core/budget.ts).
  *  4. Snapshot auto-fold + txn sweeps inside each edit (see core docs).
  *  5. Debug dump: full rendered surface written to $DSH_CLM_DUMP_DIR
  *     (default ~/.dsh/clm-dumps/<session-id>/) after map/edit calls.
@@ -37,7 +39,7 @@ const name = PLUGIN_NAME;
 /** Hard dependencies; systemPrompt and tokenMeter are optional (ctx.inject / ctx.get). */
 const inject = ["tools"];
 
-const TOOL_DESCRIPTION = `View and rewrite this conversation's own context. (v11: pair-atomic map units — an assistant message with tool calls plus ALL its tool results is ONE numbered unit, so an edit can never split a call/result pair: prevention at planning time, no auto-extend. op=map is a pure read — stale context_edit transaction traces are marked "⏳ folds on next edit" and superseded runtime-context snapshots are hidden outright (counted in the map footer); both collapse inside the next op=edit (one log rewrite per transaction; snapshots fold only at/after the first edit point — the prompt-cache-clean prefix is never touched). Pure context_edit call+result pairs collapse into one-line markers; in a mixed multi-call node (context_edit sharing an assistant node with other tools) only the stale context_edit result is stubbed in place — the node and the call→result link stay.) When an edit call directly follows its planning map (nothing but runtime-context snapshots between), that map pair collapses IMMEDIATELY in the same transaction; the edit call's own trace collapses on the next edit as usual.
+const TOOL_DESCRIPTION = `View and rewrite this conversation's own context. (v12: pair-atomic map units — an assistant message with tool calls plus ALL its tool results is ONE numbered unit, so an edit can never split a call/result pair: prevention at planning time, no auto-extend. op=map is a pure read — stale context_edit transaction traces are marked "⏳ folds on next edit" and superseded runtime-context snapshots are hidden outright (counted in the map footer); both collapse inside the next op=edit (one log rewrite per transaction; snapshots fold only at/after the first edit point — the prompt-cache-clean prefix is never touched). Pure context_edit call+result pairs collapse into one-line markers; in a mixed multi-call node (context_edit sharing an assistant node with other tools) only the stale context_edit result is stubbed in place — the node and the call→result link stay.) When an edit call directly follows its planning map (nothing but runtime-context snapshots between), that map pair collapses IMMEDIATELY in the same transaction; the edit call's own trace collapses on the next edit as usual.
 
 op=map lists the units currently in your context as numbered lines (#N(#a..#b), role, ~tokens, preview) — #N is the unit number, (#a..#b) the original node span it covers. op=edit permanently replaces numbered unit ranges with shorter text you write, freeing context; removed messages stay in the durable session log but leave the model-visible history. Ranges in one call share the most recent map's numbering and are applied highest-first, so earlier numbers stay valid within the call. Adjacent units in one edit merge into a single contiguous span.
 

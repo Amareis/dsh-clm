@@ -44,6 +44,18 @@ describe("renderBudget", () => {
     expect(at(55_000)).toContain("~55% of 100.0K tokens");
     expect(at(70_000)).toContain("Budget past 70%");
   });
+  it("does NOT reserve maxTokens (provider reserve is unmeasurable; thresholds carry the margin)", () => {
+    const session = editableSurface();
+    session.append("request/header", {
+      header: { config: { provider: "test", model: "test", maxTokens: 50_000 } },
+    });
+    const at = (n: number) =>
+      renderBudget(session, { measure: () => ({ totalTokens: n }) } as never);
+    // Even with maxTokens = window/2 in the request header, the counter keeps
+    // the raw window (see the NOTE in budget.ts).
+    expect(at(40_000)).toContain("~40% of 100.0K tokens");
+    expect(at(40_000)).not.toContain("reserved");
+  });
   it("escalates at the 70/75/90 thresholds", () => {
     const session = editableSurface();
     session.append("request/context", { provider: "test", model: "test", contextWindow: 10 }); // tiny window → ratio ≫ 0.9

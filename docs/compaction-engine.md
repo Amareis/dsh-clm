@@ -671,3 +671,11 @@ independently (the engine without the tool will always fall back on timeout).
 8. **UI.** Checkpoints with `kind: 'compact-checkpoint'` are already
    recognized; it is worth showing an "awaiting self-edit" state (between
    start/end) as a live marker, analogous to the compaction indicator.
+9. **Provider overflow wording (found by dogfooding, 2026-10-10).** Kimi's
+   400 `"Your request exceeded k3-256k model token limit: 262144"` is NOT
+   recognized by `isContextWindowExceededError` in `dsh-llm` (checked live:
+   returns `false`), so it surfaces as INVALID_REQUEST and the
+   `agent/request-error` overflow-recovery listener never fires — **even
+   `dsh-compaction-basic` has no recovery on this route**. Harness-level
+   fix: extend the regex family with `request exceeded … model token
+   limit`. Until then, the CLM engine inherits the gap.
